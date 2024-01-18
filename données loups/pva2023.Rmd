@@ -1,0 +1,487 @@
+---
+title: "pva-2023"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-01-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analyse de viabilité
+
+### Préparatifs
+
+On calcule la viabilité de la population selon un modèle avec ou sans freinage. Ces modèles ont été développés par Guillaume pour l'expertise.
+
+Tout se passe en bayésien. Si vous vous embêtez, vous pouvez m'écouter pendant 7 heures introduire tout ça [par ici](https://github.com/oliviergimenez/Bayesian_Workshop). Pour ce qui nous intéresse ici, il nous faudra un package spécifique pour implémenter les méthodes MCMC.
+```{r}
+library(R2jags)
+library(tidyverse)
+```
+
+### Les modèles
+
+On définit deux modèles, un modèle exponentiel, et un autre avec freinage. 
+
+Avec le modèle exponentiel, on stipule que les effectifs $N_{t}$ à l'année $t$ sont obtenus à partir des effectifs à l'année $t-1$ auxquels on a retranché les prélèvements $H_{t-1}$, le tout multiplié par le taux de croissance annuel $\lambda$ :
+$$N_{t} = \lambda (N_{t-1} - H_{t-1}).$$
+Cette relation est déterministe. Pour ajouter de la variabilité démographique, on suppose que les effectifs sont distribués selon une distribution log-normale, autrement dit que les effectifs sont normalement distribués sur l'échelle log : 
+$$\log(N_{t}) \sim \text{Normale}(\mu_{t}, \sigma_{\text{proc}})$$
+avec $\mu_{t} = \log(N_{t}) = \log(\lambda (N_{t-1} - H_{t-1}))$ et $\sigma_{\text{proc}}$ l'erreur standard des effectifs sur l'échelle log. On aurait pu prendre une loi de Poisson à la place. La stochasticité environnementale est en général captée par le taux de croissance, mais pas ici puisqu'il est constant. C'est une hypothèse forte du modèle. Dans l'idéal, on pourrait coupler le modèle de capture-recapture, et le modèle qui décrit l'évolution des effectifs au cours du temps. 
+
+On ajoute une couche d'observation qui capture les erreurs sur les effectifs. **Ici il me semble qu'on peut faire mieux puisque les erreurs d'observation sont connues, et estimées par capture-recapture. Dommage de ne pas les utiliser.** 
+
+Si l'on note $y_t$ les effectifs observés, on suppose que ces comptages annuels (qui sont des estimations, je le redis, pas des observations entachées d'erreur comme dans le cas classique) sont distribués comme une loi de Poisson de moyenne les vrais effectifs $N_{t}$:
+$$y_t \sim \text{Poisson}(N_t).$$
+Souvent, les données de comptage sont surdispersés (la variance des $y_t$ est plus grande que son espérance,or l'égalité est le défaut dans une distribution de Poisson). Pour gérer ce problème, Guillaume spécifie le paramètre de la Poisson, le taux, comme une loi gamma. **Cela revient en fait à considérer que les effectifs sont distribués comme une distribution binomiale négative** qui relâche l'hypothèse d'égalité entre espérance et variance de la Poisson. Il écrit que :
+$$y_t \sim \text{Poisson}(\psi_t)$$ avec $\psi_t \sim \gamma(\alpha_t, \beta_t)$, $\alpha_t = N_t^2 / \sigma^2_{\text{obs}}$ et $\beta_t = N_t / \sigma^2_{\text{obs}}$. 
+
+Ce modèle exponentiel s'écrit de la façon suivante dans Jags. 
+```{r}
+exp_model <- function(){
+  
+  # Priors
+  errorObs ~ dunif(0, 0.20)
+  sigmaProc ~ dunif(0, 10)
+  tauProc <- 1/sigmaProc^2
+  lambda ~ dunif(0, 2)
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+
+  # Process model
+  for (t in 2:(nyears)) {
+    # density dependence on lambda
+    Nproc[t] <- log(max(1, lambda*N[t-1]))
+    N[t] ~ dlnorm(Nproc[t], tauProc)
+}
+
+  # Observation model
+  for (t in 1:nyears) {
+    sigmaObs[t] <- errorObs*N[t]
+    shapeObs[t] <- N[t]*N[t]/(sigmaObs[t]*sigmaObs[t])
+    rateObs[t] <- N[t]/(sigmaObs[t]*sigmaObs[t])
+    lambdaNobs[t] ~ dgamma(shapeObs[t], rateObs[t])
+    Nobs[t] ~ dpois(lambdaNobs[t])
+}
+  
+  # Projected population
+  for (t in (nyears + 1):(nyears + 15)) {
+    Nproc[t] <- log(max(1, lambda*(N[t-1])))
+    N[t] ~ dlnorm(Nproc[t], tauProc)
+}
+
+}
+```
+
+Il y a un terme dit de densité-dépendance qui est introduit dans ce code, via `Nproc[t] <- log(max(1, lambda*N[t-1]))`. L'astuce `log(max(1, x))` permet de s'assurer que le log est toujours positif puisqu'on prend le log d'une quantité qui est toujours au moins égale à 1. 
+
+A noter que les projections sont faites sur 15 années à venir, en utilisant une distribution log-normale. 
+
+Des priors informatifs (il me semble) sont spécifiés. **Ca vaudrait le coup de faire des priors predictive check pour vérifier que les priors induits sur les vrais effectifs $N_t$ ont du sens.**
+
+Vient ensuite le modèle avec freinage. Celui-ci est une simple variation du modèle exponentiel dans lequel on introduit un terme de freinage qui agit sur le taux de croissance $\lambda$ à l'année $t$ via $\lambda + \beta * X_t$ où $X_t = 0$ les années sans freinage, et $X_t = 1$ pour les années avec freinage. Cette variable $X_t$ est à spécifier par l'utilisateur. **Il serait important d'expliciter ce choix dans les analyses, et d'étudier peut-être plusieurs choix.**
+
+```{r}
+frein_model <- function(){
+  
+  # Priors
+  errorObs ~ dunif(0, 0.20)
+  sigmaProc ~ dunif(0, 10)
+  tauProc <- 1/sigmaProc^2
+  lambda ~ dunif(0, 2)
+  beta ~ dnorm(0, 1.0E-6)
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+  
+  # Process model
+  for (t in 2:(nyears)) {
+    Nproc[t] <- log(max(1, (lambda + beta*X[t-1])*N[t-1]))
+    N[t] ~ dlnorm(Nproc[t], tauProc)
+}
+  
+  # Observation model
+  for (t in 1:nyears) {
+    sigmaObs[t] <- errorObs*N[t]
+    shapeObs[t] <- N[t]*N[t]/(sigmaObs[t]*sigmaObs[t])
+    rateObs[t] <- N[t]/(sigmaObs[t]*sigmaObs[t])
+    lambdaNobs[t] ~ dgamma(shapeObs[t], rateObs[t])
+    Nobs[t] ~ dpois(lambdaNobs[t])
+}
+  
+  # Projected population
+  for (t in (nyears + 1):(nyears + 15)) {
+    Nproc[t] <- log(max(1, (lambda + beta)*(N[t-1])))
+    N[t] ~ dlnorm(Nproc[t], tauProc)
+}
+}
+```
+
+Rien de nouveau dans les projections, sauf que $X_t = 1$ pour $t = T + 1, \ldots, T + 1$. 
+
+Ici aussi on a un terme de densité-dépendance. Des priors informatifs sont spécifiés, et non-informatifs (sur $\beta$ par exemple)  qui pourraient être faiblement informatifs. A nouveau, **ça vaudrait le coup de faire des priors predictive check**.
+
+### Les données
+
+Il nous faut en théorie aussi les nombres de loups tués par an. En théorie, car **en inspectant les modèles ci-dessus, et la liste des données ci-dessous, il s'avère que les modèles développés par Guillaume n'utilisent pas les nombres de loups tués!**. C'est un peu embêtant si l'on veut explorer la viabilité en fonction des stratégies de gestion (seuil de prélèvements). Guillaume devait avoir une raison pour ne pas les inclure. C'est aussi une raison pour laquelle je proposais de s'inspirer de la théorie écologique des prélèvements (voir à la fin du document pour plus). 
+```{r}
+harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
+```
+
+Les estimations d'effectifs par CMR:
+```{r}
+CMR <- c(17.1,35.4,
+47.7,
+25.1,
+62.6,
+47.9,
+81.7,
+110.5,
+102.7,
+135.9,
+132.6,
+101.7,
+130.3,
+141.4,
+141.5,
+175.5,
+210.3,
+174.5,
+353.6,
+280.2,
+376.7,
+561.2,
+571.9,
+682.4,
+645.7,
+783.8,
+868)
+```
+
+
+### Ajustement du modèle exponentiel, sans freinage
+
+On met ensemble les effectifs estimés par CMR ainsi que les nombres de loups tués.
+```{r}
+thedata <- cbind(round(CMR), harvest)
+colnames(thedata) <- c("N", "H")
+thedata <- as.data.frame(thedata)
+nyears <- nrow(thedata)
+```
+
+On construit une liste avec les données, et on précise les paramètres à estimer et le nombre de chaines de MCMC (j'en prends trois ici).
+```{r}
+bugs.data <- list(
+	nyears = nyears,
+	Nobs = thedata$N
+)
+bugs.monitor <- c("lambda", "sigmaProc", "sigmaObs", "N", "tauProc")
+bugs.chains <- 3
+bugs.inits <- function(){
+	list(
+	)
+}
+```
+
+Allez zooh, on lance la machine!
+```{r}
+exp_res <- jags(data = bugs.data, 
+                  inits = bugs.inits, 
+                  parameters.to.save = bugs.monitor, 
+                  model.file = exp_model, 
+                  n.chains = bugs.chains, 
+													 n.thin = 10, 
+													 n.iter = 100000, 
+													 n.burnin = 50000)
+```
+
+On inspecte la convergence.
+```{r}
+traceplot(exp_res, varname = c('lambda', "sigmaProc"), ask = FALSE)
+```
+
+Jetons un coup d'oeil aux estimations.
+```{r}
+res <- print(exp_res, intervals = c(2.5/100, 50/100, 97.5/100))
+res
+```
+
+Le taux de croissance vaut `r res$summary[,"mean"]["lambda"]` avec son intervalle de crédibilité à 95% qui vaut (`r res$summary[,"2.5%"]["lambda"]`, `r res$summary[,"97.5%"]["lambda"]`). Comme cet intervalle ne contient clairement pas 1, le taux de croissance est au-dessus de 1 sans ambiguïté. On le voit aussi sur la distribution a posteriori estimée dont la masse est concentrée sur les valeurs plus grandes que 1. 
+```{r}
+post_exp <- exp_res$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+#  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+#  filter(str_detect(parameter, "lambda")) %>%
+  ggplot() + 
+  aes(x = lambda) + 
+  geom_density() + 
+  geom_vline(xintercept = 1, lty = "dashed", color = "red") +
+  labs(x = "Taux de croissance", title = "exponentiel")
+post_exp
+```
+
+
+Ensuite les projections.
+```{r}
+proj_exp <- exp_res$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lci = quantile(value, probs = 2.5/100),
+            uci = quantile(value, probs = 97.5/100)) %>%
+  mutate(an = parse_number(parameter)) %>%
+  arrange(an) %>%
+  ggplot() + 
+  geom_ribbon(aes(x = an, y = medianN, ymin = lci, ymax = uci), fill = "red", alpha = 0.3) + 
+  geom_line(aes(x = an, y = medianN), lty = "dashed", color = "red") + 
+#  geom_point(aes(x = an, y = medianN), color = "red") +
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1:unique(nyears), y = Nobs)) + 
+  coord_cartesian(xlim = c(1, 35), ylim = c(0, 1000)) +
+  labs(y = "Effectifs",
+       x = "Années",
+       title = "Effectifs projetés selon modèle exponentiel",
+       subtitle = "avec effectifs observés (points noirs)") + 
+  scale_x_continuous(breaks = seq(1, 40, by = 4),
+                   labels = seq(1996, 2035, by = 4))
+proj_exp
+```
+
+
+### Ajustement du modèle avec freinage
+
+Les données, les paramètres à estimer, le nombre de chaînes MCMC et les valeurs initiales (qu'on laisse à Jags la liberté de choisir). Attention à $X$ dans les données. Je prendrai le temps aussi d'écrire le modèle formellement, en langage mathématique, pour être bien sûr de comprendre ce qu'il fait. 
+```{r}
+bugs.data <- list(
+	nyears = nyears,
+	Nobs = thedata$N,
+	X = c(rep(0, nyears-8), rep(1, 7), NA)
+)
+bugs.monitor <- c("lambda", "beta", "sigmaProc", "sigmaObs", "N", "tauProc")
+bugs.chains <- 3
+bugs.inits <- function(){
+	list(
+	)
+}
+```
+
+Et zooh, on lance le tout!
+```{r}
+frein_mcmc <- jags(data = bugs.data, 
+													 inits = bugs.inits, 
+													 parameters.to.save = bugs.monitor, 
+													 model.file = frein_model, 
+													 n.chains = bugs.chains, 
+													 n.thin = 10, 
+													 n.iter = 100000, 
+													 n.burnin = 50000)
+```
+
+On inspecte la convergence.
+```{r}
+traceplot(frein_mcmc, varname = c('lambda', "beta", "sigmaProc"), ask = FALSE)
+```
+
+Jetons un coup d'oeil aux estimations.
+```{r}
+res <- print(frein_mcmc, intervals = c(2.5/100, 50/100, 97.5/100))
+res
+```
+
+Le taux de croissance vaut `r mean(frein_mcmc$BUGSoutput$sims.matrix[,"lambda"] + frein_mcmc$BUGSoutput$sims.matrix[,"beta"])` avec son intervalle de crédibilité à 95% qui vaut (`r quantile(frein_mcmc$BUGSoutput$sims.matrix[,"lambda"] + frein_mcmc$BUGSoutput$sims.matrix[,"beta"], probs = 2.5/100)`, `r quantile(frein_mcmc$BUGSoutput$sims.matrix[,"lambda"] + frein_mcmc$BUGSoutput$sims.matrix[,"beta"], 97.5/100)`). Cet intervalle ne contient pas 1, le taux de croissance est au-dessus de 1 et la distribution est plus recentrée vers la valeur 1 que pour le modèle sans freinage. On le voit aussi sur la distribution a posteriori estimée. 
+```{r}
+post_frein <- frein_mcmc$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+#  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+#  filter(str_detect(parameter, "lambda")) %>%
+  ggplot() + 
+  aes(x = lambda + beta) + 
+  geom_density() + 
+  geom_vline(xintercept = 1, lty = "dashed", color = "red") +
+  labs(x = "Taux de croissance", title = "freinage")
+post_frein
+```
+
+Ensuite les projections.
+```{r}
+proj_frein <- frein_mcmc$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lci = quantile(value, probs = 2.5/100),
+            uci = quantile(value, probs = 97.5/100)) %>%
+  mutate(an = parse_number(parameter)) %>%
+  arrange(an) %>%
+  ggplot() + 
+  geom_ribbon(aes(x = an, y = medianN, ymin = lci, ymax = uci), fill = "red", alpha = 0.3) + 
+  geom_line(aes(x = an, y = medianN), lty = "dashed", color = "red") + 
+#  geom_point(aes(x = an, y = medianN), color = "red") +
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1:unique(nyears), y = Nobs)) + 
+  coord_cartesian(xlim = c(1, 35), ylim = c(0, 1000)) +
+  labs(y = "Effectifs",
+       x = "Années",
+       title = "Effectifs projetés selon modèle avec freinage",
+       subtitle = "avec effectifs observés (points noirs)") + 
+  scale_x_continuous(breaks = seq(1, 40, by = 4),
+                   labels = seq(1996, 2035, by = 4))
+proj_frein
+```
+
+
+
+
+## Conclusions
+
+Pour résumer, on obtient pour le taux de croissance. 
+```{r}
+library(patchwork)
+(post_exp | post_frein)  + 
+  plot_annotation(title = "Taux de croissance")
+```
+
+Et pour les projections.
+```{r}
+(proj_exp | proj_frein) +
+  plot_annotation("Effectifs projetés")
+```
+
+* Avec le modèle exponentiel, le taux de croissance est de 15% avec un intervalle de crédibilité qui ne contient pas 0, donc significatif positif ; le modèle avec freinage suggère un taux de croissance similaire, avec un intervalle de crédibilité qui ne contient pas (mais pas de beaucoup) la valeur 0. 
+
+* Il est impossible de distinguer entre le modèle exponentiel vs celui avec freinage en utilisant un critère de sélection comme le DIC (un peu comme l'AIC en bayésien). Les valeurs sont très proches l'une de l'autre. 
+
+
+## Annexe: Modèle avec les prélèvements
+
+On suit Andrén, H., Hobbs, N. T., Aronsson, M., Brøseth, H., Chapron, G., Linnell, J. D. C., Odden, J., Persson, J., and Nilsen, E. B.. 2020. [Harvest models of small populations of a large carnivore using Bayesian forecasting](https://esajournals.onlinelibrary.wiley.com/doi/full/10.1002/eap.2063). *Ecological Applications* 30(3):02063. 10.1002/eap.2063. 
+
+Dans leur papier, Henrik et les collègues construisent un modèle démographique structuré en classes d'âge. J'ai pas envie de me lancer dans un truc compliqué, l'idée est simplement de comprendre comment dérouler leur approche. 
+
+On part sur un modèle exponentiel. On stipule que les effectifs $N_{t}$ à l'année $t$ sont obtenus à partir des effectifs à l'année $t-1$ auxquels on a retranché les prélèvements $H_{t-1}$, le tout multiplié par le taux de croissance annuel $\lambda$ :
+$$N_{t} = \lambda (N_{t-1} - H_{t-1}).$$
+Cette relation est déterministe. Pour ajouter de la variabilité démographique, on suppose que les effectifs sont distribués selon une distribution log-normale, autrement dit que les effectifs sont normalement distribués sur l'échelle log : 
+$$\log(N_{t}) \sim \text{Normale}(\mu_{t}, \sigma_{\text{proc}})$$
+avec $\mu_{t} = \log(N_{t}) = \log(\lambda (N_{t-1} - H_{t-1}))$ et $\sigma_{\text{proc}}$ l'erreur standard des effectifs sur l'échelle log. On aurait pu prendre une loi de Poisson à la place. La stochasticité environnementale est en général captée par le taux de croissance, mais pas ici puisqu'il est constant. C'est une hypothèse forte du modèle. Dans l'idéal, on pourrait coupler le modèle de capture-recapture, et le modèle qui décrit l'évolution des effectifs au cours du temps. 
+
+On ajoute une couche d'observation qui capture les erreurs sur les effectifs. Si l'on note $y_t$ les effectifs observés, on suppose que ces comptages annuels sont distribués comme une loi de Poisson de moyenne les vrais effectifs $N_{t}$:
+$$y_t \sim \text{Poisson}(N_t).$$
+
+```{r}
+model <- function(){
+  
+  # Priors
+  sigmaProc ~ dunif(0, 10)
+  tauProc <- 1/sigmaProc^2
+  lambda ~ dunif(0, 5)
+
+    N[1] ~ dgamma(1.0E-6, 1.0E-6)
+    
+    # Process model
+    for (t in 2:(nyears)) {
+      mu[t] <- lambda * (N[t-1] - harvest[t-1])
+      Nproc[t] <- log(max(1, mu[t]))
+      N[t] ~ dlnorm(Nproc[t], tauProc)
+    }
+
+  # Observation model
+  for (t in 1:nyears) {
+    y[t] ~ dpois(N[t])
+  }
+  
+}
+```
+
+On prépare les données. 
+```{r}
+bugs.data <- list(
+	nyears = nrow(thedata),
+	y = round(thedata$N),
+	harvest = thedata$H)
+```
+
+On précise les paramètres à estimer et le nombre de chaines de MCMC (j'en prends trois ici).
+```{r}
+bugs.monitor <- c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains <- 3
+bugs.inits <- function(){
+	list(
+	)
+}
+```
+
+Allez zooh, on lance la machine!
+```{r}
+library(R2jags)
+wolf_mod <- jags(data = bugs.data, 
+                  inits = bugs.inits, 
+                  parameters.to.save = bugs.monitor, 
+                  model.file = model, 
+                  n.chains = bugs.chains, 
+													 n.thin = 10, 
+													 n.iter = 100000, 
+													 n.burnin = 50000)
+```
+
+
+Jetons un coup d'oeil aux estimations.
+```{r}
+print(wolf_mod, intervals = c(2.5/100, 50/100, 97.5/100))
+```
+
+```{r}
+wolf_mod$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+#  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+#  filter(str_detect(parameter, "lambda")) %>%
+  ggplot() + 
+  aes(x = lambda) + 
+  geom_density() + 
+  geom_vline(xintercept = 1, lty = "dashed", color = "red") +
+  labs(x = "Taux de croissance")
+```
+
+Ensuite les projections.
+```{r}
+wolf_mod$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lci = quantile(value, probs = 2.5/100),
+            uci = quantile(value, probs = 97.5/100)) %>%
+  mutate(an = parse_number(parameter) + 1994) %>%
+  arrange(an) %>%
+  ggplot() + 
+  geom_ribbon(aes(x = an, y = medianN, ymin = lci, ymax = uci), fill = "red", alpha = 0.3) + 
+  geom_line(aes(x = an, y = medianN), lty = "dashed", color = "red") + 
+#  geom_point(aes(x = an, y = medianN), color = "red") +
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1994 + 1:unique(nyears), y = y)) + 
+  labs(y = "Effectifs de loups",
+       x = "Années",
+       title = "Projections")
+```
+
+L'ajustement est top. Evidemment, si l'on veut faire des projections, les choses se compliquent puisqu'on n'a pas les prélèvements. On peut malgré tout faire des scénarios, comme dans le papier de Andren [Harvest models of small populations of a large carnivore using Bayesian forecasting](https://esajournals.onlinelibrary.wiley.com/doi/full/10.1002/eap.2063). J'ai exploré un peu plus en détails les analyses de ce papier, voir [ici](https://github.com/oliviergimenez/lynxharvest_andren2020/blob/master/lynx_harvest.pdf). 
+
+## Trucs à faire
+
+Plusieurs petites choses. 
+
+* ~~Le fait de ne pas tenir compte des prélèvements me chagrine un peu aux entournures tout de même. Je ne me souviens plus des justifications apportées par Guillaume, j'ai sûrement raté des trucs. Je voudrais explorer l'idée d'avoir un seul modèle qui englobe les modèles exponentiel et avec freinage ($\theta$-logistique) et qui s'appuie sur la théorie du prélèvement en dynamique des populations. Jetez un coup d'oeil à l'annexe C qui commence à la page 97 du [management plan de l'USGS pour l'ours polaire]( https://ecos.fws.gov/docs/recovery_plan/PBRT%20Recovery%20Plan%20Book.FINAL.signed.pdf). Voir aussi le papier d'Henrik Andren sur le lynx : Andrén, H., Hobbs, N. T., Aronsson, M., Brøseth, H., Chapron, G., Linnell, J. D. C., Odden, J., Persson, J., and Nilsen, E. B.. 2020. [Harvest models of small populations of a large carnivore using Bayesian forecasting](https://esajournals.onlinelibrary.wiley.com/doi/full/10.1002/eap.2063). *Ecological Applications* 30(3):02063. 10.1002/eap.2063.~~
+
+* ~~Je ne comprends pas bien le terme dit de densité-dépendance introduit via  `Nproc[t] <- log(max(1, lambda * N[t-1]))`. Je simulerais bien des données selon ce modèle pour bien comprendre.~~
+
+* Pourquoi utiliser une Poisson-Gamma un peu compliquée dans sa formulation plutôt que directement une Binomiale-négative?
+
+* Il faut passer par une étape de prior predictive check pour être sûr que les priors induits sur les effectifs sont acceptables. Faire aussi une analyse de sensibilité.  
+
+* Explorer comment est choisi la variable $X$ de freinage. A minima, expliciter son choix, c'est-à-dire sur quelles années on suppose que le freinage a lieu. Pourquoi ne pas faire un modèle à seuil. 
+
+* Utiliser le wAIC plutôt que le DIC pour comparer le modèle exponentiel au modèle avec freinage. Ca se fait soit à la main dans Jags, soit via un passage en Nimble peu coûteux en général.
+
+* Dommage de ne pas faire entrer les erreurs d'estimation obtenues par CMR dans les erreurs d'observation $\sigma^2_{\text{obs}}$ du modèle à espace d'états. Cela réduirait les incertitudes, en particulier sur les projections. 
+
+
