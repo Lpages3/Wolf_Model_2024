@@ -1,4 +1,11 @@
 
+> cat("
++ model {
++ 
++ #--------------------------------------------------------
++ # 1. Define the priors for the parameters
++ #---------------------- ..." ... [TRUNCATED] 
+
 model {
 
 #--------------------------------------------------------
@@ -6,21 +13,21 @@ model {
 #--------------------------------------------------------
 # Informative prior for initial abundance based on the 
 # data and associated s.e.
-N[1] ~ dnorm(17, pow(0.28,-2))I(0,) 
+tau <- pow(0.28, -2)
+N[1] ~ dnorm(17, tau)I(0,) 
 
 # Prior for the temporal process variance
 # note that tauPro is 1/variance
 sigPro ~ dunif(0,5)
 tauPro <- pow(sigPro,-2)
 
-lambda ~ dunif(0, 5)
-
 #--------------------------------------------------------
 # 2. Process model of state-space likelihood
 #--------------------------------------------------------
 for (t in 1:years) {
-  N[t+1] <- lambda*N[t]
-  #eps[t] ~ dnorm(0,tauPro)
+  N[t+1] <- N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauPro)
+
 }
 
 #--------------------------------------------------------
@@ -33,3 +40,5 @@ for (t in 1:years) {
 
 }
 
+
+> sink()

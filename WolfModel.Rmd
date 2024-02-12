@@ -1,0 +1,753 @@
+---
+title: "Modèle de gestion adaptative du loup"
+author: "Olivier Gimenez & Loïc Pages"
+date: "12/01/2024"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Nous allons ici reprendre différents modèles d'estimation de population afin de l'appliquer à la population de loups en France. Nous allons également y ajouter un cadre prédictionnel dans une optique de gestion adaptative sur un intervalle de temps de 2 ans.
+Les modèles utilisés d'estimation utilisés dans ce code proviennent des articles de Andrén et al. et de Koons et al.
+
+
+## Préparation
+
+```{r}
+library(R2jags)
+library(tidyverse)
+```
+
+### Les données
+
+Le nombre de prélèvements :
+```{r}
+harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
+```
+
+Les estimations d'effectifs par CMR :
+```{r}
+CMR <- c(17.1,35.4,47.7,25.1,62.6,47.9,81.7,110.5,102.7,135.9,132.6,101.7,130.3,
+141.4,141.5,175.5,210.3,174.5,353.6,280.2,376.7,561.2,571.9,682.4,645.7,783.8,868)
+```
+
+Erreur d'observation :
+```{r}
+ObsSE=rep(0.3,27)
+```
+
+On met ensemble les effectifs estimés par CMR ainsi que les nombres de loups tués.
+```{r}
+dat <- cbind(round(CMR), ObsSE, harvest)
+colnames(dat) <- c("N", "se", "H")
+dat <- as.data.frame(dat)
+nyears <- nrow(dat)
+```
+
+# Les modèles
+
+## Modèle exponentiel
+
+$$N_{t} = \lambda (N_{t-1} - H_{t-1}).$$
+$$\log(N_{t}) \sim \text{Normale}(\mu_{t}, \sigma_{\text{proc}})$$
+$$\mu_{t} = \log(N_{t}) = \log(\lambda (N_{t-1} - H_{t-1}))$$
+$$y_t \sim \text{Poisson}(N_t).$$
+
+```{r}
+modelexp = function(){
+  
+  # Priors
+  sigmaProc ~ dunif (0,10)
+  tauProc = 1/sigmaProc^2
+  lambda ~ dunif(0,5)
+  
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+  
+  # Process model
+  for (t in 2:(nyears)){
+    mu[t] = lambda * (N[t-1])
+    NProc[t] = log(max(1, mu[t])) 
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+  
+  # Observation model
+  for (t in 1:nyears){
+    y[t] ~ dpois(N[t])
+  }
+}
+```
+
+Initialisation des données
+```{r}
+bugs.data = list(
+	nyears = nrow(dat),
+	y = dat$N)
+```
+
+Paramètres JAGS
+```{r}
+bugs.monitor = c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+	list(
+	)
+}
+```
+
+Lancement du modèle
+```{r}
+library(R2jags)
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+```
+```{r}
+print(wolf_modelexp, intervals = c(2.5/100, 50/100, 97.5/100))
+```
+```{r}
+wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated population size",
+       subtitle = "Observed population size (black dots)",
+       x = "Years",
+       y = "Number of wolves")
+
+```
+
+### Prédiction
+Prédiction sur 2 ans en faisant varier le taux de prélèvement.
+
+```{r}
+modelexp = function(){
+  
+  # Priors
+  sigmaProc ~ dunif (0,10)
+  tauProc = 1/sigmaProc^2
+  lambda ~ dunif(0,5)
+  
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+  
+  # Process model
+  for (t in 2:(nyears)){
+    mu[t] = lambda * (N[t-1] - H[t-1])
+    NProc[t] = log(max(1, mu[t])) 
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+  
+  # Observation model
+  for (t in 1:nyears){
+    y[t] ~ dpois(N[t])
+  }
+  
+  # Projected model
+  for (t in (nyears+1):(nyears+2)){
+    mu[t] = (lambda - dH) * N[t-1] 
+    NProc[t] = log(max(1, mu[t])) 
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+}
+```
+
+Initialisation des différents taux de prélèvement :
+```{r}
+dH = c(0, 0.10, 0.20, 0.30)
+```
+
+On lance la machine pour chaque taux et on affiche la courbe d'effectifs : 
+
+```{r,echo=FALSE}
+
+# Initialisation des données
+bugs.data = list(
+	nyears = nrow(dat),
+	y = dat$N,
+	H = dat$H,
+	dH = dH[1]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+	list(
+	)
+}
+
+# Lancement du modèle
+
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+```
+```{r}
+wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated and projected population size",
+       subtitle = "Harvest rate : 0%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+```{r,echo=FALSE}
+
+# Initialisation des données
+bugs.data = list(
+	nyears = nrow(dat),
+	y = dat$N,
+	H = dat$H,
+	dH = dH[2]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+	list(
+	)
+}
+
+# Lancement du modèle
+
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+```
+```{r}
+wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated and projected population size",
+       subtitle = "Harvest rate : 10%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
+```{r,echo=FALSE}
+
+# Initialisation des données
+bugs.data = list(
+	nyears = nrow(dat),
+	y = dat$N,
+	H = dat$H,
+	dH = dH[3]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+	list(
+	)
+}
+
+# Lancement du modèle
+
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+```
+```{r}
+wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated and projected population size",
+       subtitle = "Harvest rate : 20%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
+```{r,echo=FALSE}
+
+# Initialisation des données
+bugs.data = list(
+	nyears = nrow(dat),
+	y = dat$N,
+	H = dat$H,
+	dH = dH[4]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("lambda", "sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+	list(
+	)
+}
+
+# Lancement du modèle
+
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+```
+```{r}
+wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated and projected population size",
+       subtitle = "Harvest rate : 30%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
+On définit un objectif d'un maximum d'effectifs à 1250, et un minimum à 1000.
+Pour atteindre cet objectif on peut imposer un taux de prélèvement de 0% ou 10% sur 2 ans.
+
+
+
+## Modèle Marche aléatoires
+
+
+$$N[t+1]=N[t]+eps$$
+$$eps \sim \text{Normale}(0,\sigma_\text{proc})$$
+$$\sigma_\text{proc} \sim \text{Uniforme}(0,5)$$
+$$y[t] \sim \text{Normale}(N[t],\text{ySe}[t]^{-2})$$
+```{r}
+modelnull = function(){
+# Priors 
+sigmaProc ~ dunif(0,5)
+tauProc = pow(sigmaProc,-2)
+
+N1 ~ dnorm(17,1/0.28^2)
+N[1] = max(0,N1)
+
+# Process model
+for (t in 1:years){
+  N[t+1] = N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauProc)
+}
+
+# Observation model
+for (t in 1:years){
+  y[t] ~ dnorm(N[t],pow(yse[t],-2))
+  }
+}
+
+```
+
+
+
+```{r,message=FALSE}
+perspredictwolf=matrix(NA,27,1)
+perspredictwolf[1]=dat$N[1]
+
+quantile=matrix(NA,27,2)
+quantile[1,1] = quantile(dat$N[1], probs = 2.5/100)
+quantile[1,2] = quantile(dat$N[1], probs = 97.5/100)
+
+for (i in 2:length(dat$N)){
+  y = dat$N[1:i]
+  yse = ObsSE[1:i]
+  years = i
+# Initialisation des données
+  bugs.data = list(
+	  years = years,
+	  y = y,
+	  yse = yse) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+  list(
+    ) 
+  }
+
+# Lancement du programme
+wolf_modelnull = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelnull,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=10000, 
+                   n.burnin=5000)
+
+perspredictwolf[i] = median(wolf_modelnull$BUGSoutput$sims.list$N[,i+1])
+quantile[i,1] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 2.5/100)
+quantile[i,2] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 97.5/100)
+
+}
+```
+
+```{r}
+ ggplot()+
+  geom_line(aes(x = 1995 + 1:unique(nyears), y = perspredictwolf), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = 1995 + 1:unique(nyears), ymin = quantile[,1], ymax = quantile[,2]), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
+  #coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Estimated population size",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+### Prédiction
+
+```{r}
+modelnull = function(){
+# Priors 
+sigmaProc ~ dunif(0,5)
+tauProc = pow(sigmaProc,-2)
+
+N1 ~ dnorm(17,1/0.28^2)
+N[1] = max(0,N1)
+
+# Process model
+for (t in 1:years){
+  N[t+1] = N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauProc)
+}
+
+# Observation model
+for (t in 1:years){
+  y[t] ~ dnorm(N[t],pow(yse[t],-2))
+}
+
+# Prediction model
+for (t in (years+1):(years+2)){
+  N[t+1] = (1-dH) * N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauProc)
+}
+}
+
+```
+
+
+```{r,echo=FALSE}
+perspredictwolf=matrix(NA,29,1)
+perspredictwolf[1]=dat$N[1]
+
+quantile=matrix(NA,29,2)
+quantile[1,1] = quantile(dat$N[1], probs = 2.5/100)
+quantile[1,2] = quantile(dat$N[1], probs = 97.5/100)
+
+ObsSE[28]=0.28
+ObsSE[29]=0.3
+
+for (i in 2:(length(dat$N)+2)){
+  y = dat$N[1:i]
+  yse = ObsSE[1:i]
+  years = i
+# Initialisation des données
+  bugs.data = list(
+	  years = years,
+	  y = y,
+	  yse = yse,
+	  dH = dH[1]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+  list(
+    ) 
+  }
+
+# Lancement du programme
+wolf_modelnull = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelnull,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=10000, 
+                   n.burnin=5000)
+
+perspredictwolf[i] = median(wolf_modelnull$BUGSoutput$sims.list$N[,i+1])
+quantile[i,1] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 2.5/100)
+quantile[i,2] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 97.5/100)
+
+}
+```
+
+```{r}
+ ggplot()+
+  geom_line(aes(x = 1995 + 1:(unique(nyears)+2), y = perspredictwolf), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = 1995 + 1:(unique(nyears)+2), ymin = quantile[,1], ymax = quantile[,2]), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:(unique(nyears)+2), y = y)) + 
+  coord_cartesian(xlim=c(1996,2025),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Projected and estimated population size",
+       subtitle = "Harvest rate : 0%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+```{r,message=FALSE}
+perspredictwolf=matrix(NA,29,1)
+perspredictwolf[1]=dat$N[1]
+
+quantile=matrix(NA,29,2)
+quantile[1,1] = quantile(dat$N[1], probs = 2.5/100)
+quantile[1,2] = quantile(dat$N[1], probs = 97.5/100)
+
+for (i in 2:(length(dat$N)+2)){
+  y = dat$N[1:i]
+  yse = ObsSE[1:i]
+  years = i
+# Initialisation des données
+  bugs.data = list(
+	  years = years,
+	  y = y,
+	  yse = yse,
+	  dH = dH[2]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+  list(
+    ) 
+  }
+
+# Lancement du programme
+wolf_modelnull = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelnull,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=10000, 
+                   n.burnin=5000)
+
+perspredictwolf[i] = median(wolf_modelnull$BUGSoutput$sims.list$N[,i+1])
+quantile[i,1] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 2.5/100)
+quantile[i,2] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 97.5/100)
+
+}
+```
+
+```{r}
+ ggplot()+
+  geom_line(aes(x = 1995 + 1:(unique(nyears)+2), y = perspredictwolf), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = 1995 + 1:(unique(nyears)+2), ymin = quantile[,1], ymax = quantile[,2]), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:(unique(nyears)+2), y = y)) + 
+  coord_cartesian(xlim=c(1996,2023),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Projected and estimated population size",
+       subtitle = "Harvest rate : 10%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+```{r,message=FALSE}
+perspredictwolf=matrix(NA,29,1)
+perspredictwolf[1]=dat$N[1]
+
+quantile=matrix(NA,29,2)
+quantile[1,1] = quantile(dat$N[1], probs = 2.5/100)
+quantile[1,2] = quantile(dat$N[1], probs = 97.5/100)
+
+for (i in 2:length(dat$N)+2){
+  y = dat$N[1:i]
+  yse = ObsSE[1:i]
+  years = i
+# Initialisation des données
+  bugs.data = list(
+	  years = years,
+	  y = y,
+	  yse = yse,
+	  dH = dH[3]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+  list(
+    ) 
+  }
+
+# Lancement du programme
+wolf_modelnull = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelnull,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=10000, 
+                   n.burnin=5000)
+
+perspredictwolf[i] = median(wolf_modelnull$BUGSoutput$sims.list$N[,i+1])
+quantile[i,1] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 2.5/100)
+quantile[i,2] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 97.5/100)
+
+}
+```
+
+```{r}
+ ggplot()+
+  geom_line(aes(x = 1995 + 1:unique(nyears)+2, y = perspredictwolf), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = 1995 + 1:unique(nyears)+2, ymin = quantile[,1], ymax = quantile[,2]), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears)+2, y = y)) + 
+  coord_cartesian(xlim=c(1996,2025),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Projected and estimated population size",
+       subtitle = "Harvest rate : 20%",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+```{r,message=FALSE}
+perspredictwolf=matrix(NA,29,1)
+perspredictwolf[1]=dat$N[1]
+
+quantile=matrix(NA,29,2)
+quantile[1,1] = quantile(dat$N[1], probs = 2.5/100)
+quantile[1,2] = quantile(dat$N[1], probs = 97.5/100)
+
+for (i in 2:length(dat$N)+2){
+  y = dat$N[1:i]
+  yse = ObsSE[1:i]
+  years = i
+# Initialisation des données
+  bugs.data = list(
+	  years = years,
+	  y = y,
+	  yse = yse,
+	  dH = dH[4]) 
+
+
+# Paramètres JAGS
+bugs.monitor = c("sigmaProc","N", "tauProc")
+bugs.chains = 3
+bugs.inits = function(){
+  list(
+    ) 
+  }
+
+# Lancement du programme
+wolf_modelnull = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelnull,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+
+perspredictwolf[i] = median(wolf_modelnull$BUGSoutput$sims.list$N[,i+1])
+quantile[i,1] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 2.5/100)
+quantile[i,2] = quantile(wolf_modelnull$BUGSoutput$sims.list$N[,i+1], probs = 97.5/100)
+
+}
+```
+
+```{r}
+ ggplot()+
+  geom_line(aes(x = 1995 + 1:unique(nyears)+2, y = perspredictwolf), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = 1995 + 1:unique(nyears)+2, ymin = quantile[,1], ymax = quantile[,2]), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears)+2, y = y)) + 
+  coord_cartesian(xlim=c(1996,2025),ylim=c(0,1250))+
+  theme_bw()+
+  labs(title = "Projected and estimated population size",
+       subtitle = "Harvest rate : 30%",
+       x = "Years",
+       y = "Number of wolves")
+```

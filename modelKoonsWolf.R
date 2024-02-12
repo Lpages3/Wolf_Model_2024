@@ -24,13 +24,14 @@ N[1] ~ dnorm(17, pow(0.28,-2))I(0,)
 # note that tauPro is 1/variance
 sigPro ~ dunif(0,5)
 tauPro <- pow(sigPro,-2)
-lambda ~ dunif(0, 5)
 
 #--------------------------------------------------------
 # 2. Process model of state-space likelihood
 #--------------------------------------------------------
 for (t in 1:years) {
-  N[t+1] <- N[t]*lambda
+  N[t+1] <- N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauPro)
+
 }
 
 #--------------------------------------------------------
@@ -54,8 +55,8 @@ colnames(thedata) <- c("N", "H")
 thedata <- as.data.frame(thedata)
 
 Y=thedata$N
-Yse[26]=0.3
-Yse[27]=0.28
+Yse=rep(0.3,27)
+
 # Description of data:
 # Y: annual estimates of midcontinent mallard abundance (in millions)
 # Yse: s.e. of Y
