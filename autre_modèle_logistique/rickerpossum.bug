@@ -1,0 +1,32 @@
+# Ricker model for possums
+
+model
+{
+    for (i in 1:T)
+    {
+      # environmental stochasticity in growth rate
+      ev[i] ~ dnorm(0,tau)
+      
+      # per capita growth rate is density dependent - Ricker model
+      Er[i] <- exp(alpha * (1 - N[i]/K) + ev[i])
+      
+      # lambda equal to number this year times per capita rate
+      lambda[i] <- N[i] * Er[i]
+      
+      # number next year drawn from Poisson with mean lambda - demographic stochasticity
+      N[i+1] ~ dpois(lambda[i])
+    }
+
+  
+  # prior for alpha - maximum exponential growth rate
+  alpha ~ dunif(0,1.0986)
+  
+  # prior for K's, carrying capacities for the four sites
+  K ~ dunif(1,50)
+  
+  # prior for standard deviation in growth rate due to environmental stochasticity
+  sd ~ dunif(0,0.5)
+  tau <- 1/(sd*sd)
+}
+	
+

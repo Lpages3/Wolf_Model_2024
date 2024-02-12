@@ -1,0 +1,34 @@
+
+model {
+
+#--------------------------------------------------------
+# 1. Define the priors for the parameters
+#--------------------------------------------------------
+# Informative prior for initial abundance based on the 
+# data and associated s.e.
+N[1] ~ dnorm(17, pow(0.28,-2))I(0,) 
+
+# Prior for the temporal process variance
+# note that tauPro is 1/variance
+sigPro ~ dunif(0,5)
+tauPro <- pow(sigPro,-2)
+
+#--------------------------------------------------------
+# 2. Process model of state-space likelihood
+#--------------------------------------------------------
+for (t in 1:years) {
+  N[t+1] <- N[t] + eps[t]
+  eps[t] ~ dnorm(0,tauPro)
+
+}
+
+#--------------------------------------------------------
+# 3. Observation model of state-space likelihood
+#--------------------------------------------------------
+for (t in 1:years) {
+  y[t] ~ dnorm(N[t], pow(yse[t],-2)) # both y and yse are
+                                     # provided as data
+}
+
+}
+

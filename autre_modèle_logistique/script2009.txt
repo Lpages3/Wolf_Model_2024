@@ -1,0 +1,145 @@
+################## exemple 4 : modele Ricker avec WinBUGS
+
+> # on se met dans le bon repertoire de travail, i.e. ou se trouvent les codes WinBUGS
+> setwd('C:/Documents and Settings/olivier/Desktop/coursOG')
+
+> # on lit les donnees
+> N = c(32,28,29,39,20,24,22,35,20,36,34,NA)
+> T = 10
+
+> # on forme une liste des donnees 
+> datax = list(N=N,T=T)
+
+> # on fournit des valeurs initiales pour qqs parametres, 
+> # et WinBUGS se charge de generer des valeurs initiales pour les parametres restants
+> init1 = list(alpha=.5,sd=.25)
+> init2 = list(alpha=.1,sd=.05)
+> init3 = list(alpha=1,sd=.45)
+> > inits = list(init1,init2,init3)
+> # nombre de chaines
+> nb.chains = length(inits)
+
+> # Charge le paquetage 'R2WinBUGS'
+> library(R2WinBUGS)
+
+> # nombre d'iterations MCMC et burn-in
+> nb.iterations = 10000
+> nb.burnin = 5000
+
+> # Parametres dont on veut une estimation
+> parameters <- c("alpha","sd","K","lambda")
+
+> # MCMC simulations 
+> rickerposs.sim <- bugs(datax, inits, parameters, "rickerpossum.bug", n.chains = nb.chains, n.iter = nb.iterations, n.burnin = nb.burnin)
+
+> # Summarize results
+> round(rickerposs.sim$summary,2)
+
+            mean   sd  2.5%   25%   50%   75% 97.5% Rhat n.eff
+alpha       0.77 0.27  0.11  0.63  0.84  0.99  1.09 1.01   720
+sd          0.22 0.11  0.03  0.14  0.21  0.30  0.45 1.00   960
+K          29.15 4.94 19.40 26.69 28.89 31.16 40.98 1.01   420
+lambda[1]  28.59 4.08 21.14 25.81 28.51 31.18 36.51 1.00   900
+lambda[2]  29.03 4.18 21.01 26.39 28.86 31.77 37.59 1.00  1000
+lambda[3]  34.45 5.09 26.09 30.76 33.83 37.62 45.57 1.01   450
+lambda[4]  24.65 4.18 17.34 21.63 24.43 27.46 33.09 1.00  1000
+lambda[5]  25.10 3.89 17.47 22.43 25.15 27.85 32.56 1.00   380
+lambda[6]  24.89 4.10 17.04 22.06 24.93 27.58 32.90 1.00  1000
+lambda[7]  31.28 4.56 24.55 28.05 30.54 33.85 41.63 1.00   460
+lambda[8]  24.56 4.22 16.65 21.59 24.63 27.40 32.84 1.00  1000
+lambda[9]  31.01 4.66 23.35 27.50 30.59 33.77 41.40 1.00  1000
+lambda[10] 32.30 5.11 24.26 28.66 31.77 35.31 44.12 1.00   640
+deviance   62.59 4.56 55.16 59.23 62.04 65.30 72.68 1.00   560
+
+> # sauve les resultats
+> save(rickerposs.sim,file='withboth.Rdata')
+
+> # 'attache' la base de donnees de resultats
+> attach.bugs(rickerposs.sim)
+
+> # Graphical summaries
+> plot(density(alpha),xlab="maximum growth rate",ylab="probability density", main="",lwd=4)
+> plot(density(K),xlab="equilibrium population size",ylab="probability density", main="",lwd=4)
+> plot(density(sd),xlab="SD due to env. stoch.",ylab="probability density", main="",lwd=4)
+
+
+
+################## exemple 4bis : modele Ricker avec WinBUGS WITHOUT ENV STOCH
+
+> # on se met dans le bon repertoire de travail, i.e. ou se trouvent les codes WinBUGS
+> setwd('C:/Documents and Settings/olivier/Desktop/coursOG')
+
+> # on reprend les donnees
+> N = c(32,28,29,39,20,24,22,35,20,36,34,NA)
+> T = 10
+
+> # on forme une liste des donnees 
+> datax = list(N=N,T=T)
+
+> # on fournit des valeurs initiales pour qqs parametres, 
+> # et WinBUGS se charge de generer des valeurs initiales pour les parametres restants
+> init1 = list(alpha=.5)
+> init2 = list(alpha=.1)
+> init3 = list(alpha=1)
+> inits = list(init1,init2,init3)
+> # nombre de chaines
+> nb.chains = length(inits)
+
+> # Charge le paquetage 'R2WinBUGS'
+> library(R2WinBUGS)
+
+> # nombre d'iterations MCMC et burn-in
+> nb.iterations = 10000
+> nb.burnin = 5000
+
+> # Parametres dont on veut une estimation
+> parameters <- c("alpha","K")
+
+> # MCMC simulations 
+> rickerpossumSSENV.sim <- bugs(datax, inits, parameters, "rickerpossumSSENV.bug", n.chains = nb.chains, n.iter = nb.iterations, n.burnin = nb.burnin)
+
+> # Summarize results
+> round(rickerpossumSSENV.sim$summary,2)
+
+> # sauve les resultats
+> save(rickerpossumSSENV.sim,file='withdemog.Rdata')
+
+          mean   sd  2.5%   25%   50%   75% 97.5% Rhat n.eff
+alpha     0.95 0.13  0.61  0.88  0.98  1.04  1.09 1.01   600
+K        29.19 1.89 25.50 27.97 29.08 30.43 33.19 1.00  1000
+deviance 69.08 2.41 66.46 67.33 68.48 70.02 75.82 1.01   350
+
+> # 'attache' la base de donnees de resultats
+> attach.bugs(rickerpossumSSENV.sim)
+
+> # Graphical summaries
+> plot(density(alpha),xlab="maximum growth rate",ylab="probability density", main="",lwd=4)
+> plot(density(K),xlab="equilibrium population size",ylab="probability density", main="",lwd=4)
+
+> # compare graphs
+> load('withdemog.Rdata')
+> attach.bugs(rickerpossumSSENV.sim)
+> plot(density(alpha),xlab="maximum growth rate",ylab="probability density", main="",lwd=4,col='blue')
+> load('withboth.Rdata')
+> attach.bugs(rickerposs.sim)
+> lines(density(alpha),xlab="maximum growth rate",ylab="probability density", main="",lwd=4,col='red')
+
+> load('withdemog.Rdata')
+> attach.bugs(rickerpossumSSENV.sim)
+> plot(density(K),xlab="equilibrium population size",ylab="probability density", main="",lwd=4,col='blue')
+> load('withboth.Rdata')
+> attach.bugs(rickerposs.sim)
+> lines(density(K),xlab="equilibrium population size",ylab="probability density", main="",lwd=4,col='red')
+
+
+################## SynthËse exemples 4 et 4bis
+
+> # graph observed data vs. fitted model
+> load('withboth.Rdata')
+> res.lambda = apply(lambda,2,median)
+> plot(seq(2,10),res.lambda[-10],type='l',lwd=4,col='red',ylim=c(20,40),xlab='years',ylab='N')
+> points(seq(1,10),N[1:10],lwd=4,lty=2,type='l')
+> load('withdemog.Rdata')
+> attach.bugs(rickerpossumSSENV.sim)
+> res.lambda = apply(lambda,2,median)
+> points(seq(2,10),res.lambda[-10],type='l',lwd=4,col='blue')
