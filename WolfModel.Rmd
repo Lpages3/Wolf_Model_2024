@@ -43,7 +43,7 @@ harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
 Erreur d'observation :
 ```{r}
 ObsSE=rep(0.3,27)
-# se = read_csv("se.csv") %>% 
+# se = read_csv("se.csv") %>%
 #   as_tibble()
 
 
