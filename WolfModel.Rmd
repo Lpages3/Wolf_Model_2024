@@ -43,8 +43,8 @@ harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
 Erreur d'observation :
 ```{r}
 ObsSE=rep(0.3,27)
-se = read_csv("se.csv") %>% 
-  as_tibble()
+# se = read_csv("se.csv") %>% 
+#   as_tibble()
 
 
 ```
@@ -107,9 +107,9 @@ bugs.data = list(nyears = nrow(dat),
 
 Paramètres JAGS :
 ```{r}
-bugs.monitorexp = c("lambda", "sigmaProc", "N", "tauProc")
+bugs.monitor = c("lambda", "sigmaProc", "N", "tauProc")
 bugs.chains = 3
-bugs.initsexp = function() {
+bugs.inits = function() {
   list()
 }
 ```
@@ -118,8 +118,8 @@ Lancement du modèle.
 ```{r}
 library(R2jags)
 wolf_modelexp = jags(data = bugs.data,
-                   inits = bugs.initsexp, 
-                   parameters.to.save = bugs.monitorexp,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
                    model.file = modelexp,
                    n.chains = bugs.chains, 
                    n.thin=10,
@@ -169,7 +169,7 @@ dH = c(0, 0.10, 0.20, 0.30)
 Le modèle est le même que précédemment à l'exeption de la partie Projected model qui ajoute les prédicitions au modèle.
 
 ```{r}
-modelexpproj2 = function() {
+modelexp = function() {
   # Priors
   sigmaProc ~ dunif (0, 10)
   tauProc = 1 / sigmaProc ^ 2
@@ -205,16 +205,24 @@ for (i in 1:4) {
   # Initialisation des données
   bugs.data = list(
     nyears = nrow(dat),
-    y = c(dat$N,rep(NA,2)),
+    y = c(dat$N, rep(NA, 2)),
     dH = dH[i],
-    h = dat$H)
-
+    h = dat$H
+  )
+  
+  # Paramètres jags
+  bugs.monitor = c("lambda", "sigmaProc", "N", "tauProc")
+  bugs.chains = 3
+  bugs.inits = function() {
+    list()
+  }
+  
 # Lancement du modèle
 
 wolf_modelexp = jags(data = bugs.data,
-                   inits = bugs.initsexp, 
-                   parameters.to.save = bugs.monitorexp,
-                   model.file = modelexpproj2,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
                    n.chains = bugs.chains, 
                    n.thin=10,
                    n.iter=100000, 
@@ -361,20 +369,20 @@ bugs.data = list(nyears = nrow(dat),
 
 Paramètres JAGS :
 ```{r}
-bugs.monitorlogi = c("alpha", "sigmaProc", "tauProc", "K", "N")
+bugs.monitor = c("alpha", "sigmaProc", "tauProc", "K", "N")
 bugs.chains = 3
 init1 = list(alpha = .5, sigmaProc = .25)
 init2 = list(alpha = .1, sigmaProc = .05)
 init3 = list(alpha = 1, sigmaProc = .45)
-bugs.initslogi = list(init1, init2, init3)
+bugs.inits = list(init1, init2, init3)
 ```
 
 Lancement du modèle.
 ```{r}
 library(R2jags)
 wolf_modellogist = jags(data = bugs.data,
-                   inits = bugs.initslogi, 
-                   parameters.to.save = bugs.monitorlogi,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
                    model.file = modellogist,
                    n.chains = bugs.chains, 
                    n.thin=10,
@@ -416,7 +424,7 @@ wolf_modellogist$BUGSoutput$sims.matrix %>%
 ### Projection
 
 ```{r}
-modellogistproj2 = function() {
+modellogist = function() {
   # Priors
   sigmaProc ~ dunif (0, 5)
   tauProc = 1 / sigmaProc ^ 2
@@ -460,16 +468,25 @@ for (i in 1:4) {
   # Initialisation des données
   bugs.data = list(
     nyears = nrow(dat),
-    y = c(dat$N,rep(NA,2)),
+    y = c(dat$N, rep(NA, 2)),
     dH = dH[i],
-    h = dat$H)
-
-# Lancement du modèle
+    h = dat$H
+  )
+  
+  # Paramètres jags
+  bugs.monitor = c("alpha", "sigmaProc", "tauProc", "K", "N")
+  bugs.chains = 3
+  init1 = list(alpha = .5, sigmaProc = .25)
+  init2 = list(alpha = .1, sigmaProc = .05)
+  init3 = list(alpha = 1, sigmaProc = .45)
+  bugs.inits = list(init1, init2, init3)
+  
+  # Lancement du modèle
 
 wolf_modellogist = jags(data = bugs.data,
-                   inits = bugs.initslogi, 
-                   parameters.to.save = bugs.monitorlogi,
-                   model.file = modellogistproj2,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modellogist,
                    n.chains = bugs.chains, 
                    n.thin=10,
                    n.iter=100000, 
