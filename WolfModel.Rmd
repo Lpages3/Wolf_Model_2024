@@ -1095,7 +1095,7 @@ modellogist = function() {
   N[1] ~ dgamma(1.0E-6, 1.0E-6)
   
   # Process model 
-  for (t in 2:(nyears)) {
+  for (t in 2:(nyears+5)) {
     u[t-1] = N[t-1] * (1-dH)
     Er[t] = exp(alpha * (1 - u[t-1] / K)) # per capita growth rate is density dependent - Ricker model
     lambda[t] = u[t-1] * Er[t]
@@ -1106,14 +1106,14 @@ modellogist = function() {
   for (t in 1:(nyears)) {
     y[t] ~ dpois(N[t])
   }
-    #Projected population
-    for (t in (nyears+1):(nyears+5)) {
-    u[t-1] = (1-dH) * N[t-1]
-    Er[t] = exp(alpha * (1 - u[t-1] / K)) # per capita growth rate is density dependent - Ricker model
-    lambda[t] = u[t-1] * Er[t]
-    NProc[t] = log(max(1, lambda[t]))
-    N[t] ~ dlnorm(NProc[t], tauProc)
-  }
+  #   #Projected population
+  #   for (t in (nyears+1):(nyears+5)) {
+  #   u[t-1] = (1-dH) * N[t-1]
+  #   Er[t] = exp(alpha * (1 - u[t-1] / K)) # per capita growth rate is density dependent - Ricker model
+  #   lambda[t] = u[t-1] * Er[t]
+  #   NProc[t] = log(max(1, lambda[t]))
+  #   N[t] ~ dlnorm(NProc[t], tauProc)
+  # }
 }
 ```
 
@@ -1125,44 +1125,56 @@ N1 = 30
 
 ssm_sim4 = data.frame(Year = 1:nyears,
                        y = numeric(nyears),
-                       N = numeric(nyears))
+                       N = numeric(nyears),
+                      ybis = numeric(nyears),
+                      Nbis = numeric(nyears))
 
 ssm_sim4$N[1] = N1
+ssm_sim4$Nbis[1] = N1
 ```
 
 
 ```{r}
+pas = 1
 H = 0
 sigma = 0.15
 K = 800
 alpha = 0.5
 ite=0
 tempH=c()
+NAMharvest = 0.15
 
-
-for (nyears in seq(5,nyears,5)) { # Boucle sur le nombre d'itérations
-  print(H)
+for (nyears in seq(5,nyears,pas)) { # Boucle sur le nombre d'itérations
   ite=ite+1
   tempH[ite]=H
-  
+
     if (nyears == 5) {
     for (t in 1:(nyears - 1)) {
       u = ssm_sim4$N[t]*(1-H)
-      Er = exp(alpha * (1 - u/ K)) * u
-      ssm_sim4$N[t+1] = rpois(1,Er)
+      v = ssm_sim4$Nbis*(1-NAMharvest)
+      
+      Er = exp(alpha * (1 - c(u,v)/ K)) * c(u,v)
+      
+      ssm_sim4$N[t+1] = rpois(1,Er[1])
+      ssm_sim4$Nbis[t+1] = rpois(1,Er[2])
     }
   }
   
   if(nyears>5){
-    for (t in (nyears - 5):(nyears - 1)) {
+    for (t in (nyears - pas):(nyears - 1)) {
       u = ssm_sim4$N[t]*(1-H)
-      Er = exp(alpha * (1 - u/ K)) * u
-      ssm_sim4$N[t+1] = rpois(1,Er)
+      v = ssm_sim4$Nbis[t]*(1-NAMharvest)
+      
+      Er = exp(alpha * (1 - c(u,v)/ K)) * c(u,v)      
+      
+      ssm_sim4$N[t+1] = rpois(1,Er[1])
+      ssm_sim4$Nbis[t+1] = rpois(1,Er[2])    
+      }
     }
-  }
 
   for (t in 1:nyears){
   ssm_sim4$y[t]=rpois(1,ssm_sim4$N[t])
+  ssm_sim4$ybis[t]=rpois(1,ssm_sim4$Nbis[t])
   }
   
     # Initialisation des données
@@ -1190,6 +1202,7 @@ for (nyears in seq(5,nyears,5)) { # Boucle sur le nombre d'itérations
       n.iter = 20000,
       n.burnin = 5000
     )
+    output1 = wolf_modellogist$BUGSoutput$sims.matrix
     
     #print(wolf_modellogist, intervals = c(2.5/100, 50/100, 97.5/100))
     
@@ -1197,31 +1210,34 @@ for (nyears in seq(5,nyears,5)) { # Boucle sur le nombre d'itérations
     Nest = wolf_modellogist$BUGSoutput$median$N
     l = length(Nest)
     lamb = c()
-    for (t in 1:l-1) {
+    for (t in 1:(l-5)) {
       lamb[t] = Nest[t+1] / Nest[t]}
     lambda = mean(lamb)
     print(lambda)
   
-    if (lambda<1.2){H=0}
+  if (lambda<1.2){H=0}
   if(lambda>=1.2 & lambda<1.3){H=0.1}
   if(lambda>=1.3 & lambda<1.4){H=0.2}
   if(lambda>1.4){H=0.3}
   
   print(H)
 }
+
 ```
 
 ```{r}
 ggplot(ssm_sim4, aes(x=Year))+
   geom_point(aes(y=y),colour="red")+
-  geom_line(aes(y=N),colour="grey30")+
+  geom_line(aes(y=N),colour="red4", lty = "dashed")+
+  geom_point(aes(y=ybis),colour="blue")+
+  geom_line(aes(y=Nbis),colour="blue4",lty="dashed")+
   theme_bw()
 
 tempH
 ```
 
 ```{r,warning=FALSE}
-wolf_modellogist$BUGSoutput$sims.matrix %>%
+wolf_modellogist$BUGSoutput$sims.matrix%>%
   as_tibble() %>%
   pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
   filter(str_detect(parameter, "N")) %>%
@@ -1246,6 +1262,86 @@ wolf_modellogist$BUGSoutput$sims.matrix %>%
 ```{r}
 tempH
 ```
+
+## Comparaison avec une gestion non-adaptative
+
+On prend le même jeu de données simulé pécédemment et on applique un taux de prélevement constant chaque année (15% pour coller avec le taux de prélevement observé sur les loups en France).
+
+
+```{r}
+
+# Initialisation des données
+bugs.data = list(nyears = nyears,
+                 y = c(ssm_sim4$ybis[1:nyears], rep(NA, 5)),
+                 dH = NAMharvest)
+
+wolf_modellogist = jags(
+  data = bugs.data,
+  inits = bugs.inits,
+  parameters.to.save = bugs.monitor,
+  model.file = modellogist,
+  n.chains = bugs.chains,
+  n.thin = 10,
+  n.iter = 20000,
+  n.burnin = 5000
+)
+
+output2 = wolf_modellogist$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),
+               values_to = "value",
+               names_to = "parameter2") %>%
+  filter(str_detect(parameter2, "N")) %>%
+  group_by(parameter2) %>%
+  summarize(
+    medianN2 = median(value),
+    lq2 = quantile(value, probs = 2.5 / 100),
+    hq2 = quantile(value, probs = 97.5 / 100)
+  ) %>%
+  mutate(years = parse_number(parameter2)) %>%
+  arrange(years)
+```
+
+```{r,warning=FALSE}
+output1 = output1 %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),
+               values_to = "value",
+               names_to = "parameter1") %>%
+  filter(str_detect(parameter1, "N")) %>%
+  group_by(parameter1) %>%
+  summarize(
+    medianN1 = median(value),
+    lq1 = quantile(value, probs = 2.5 / 100),
+    hq1 = quantile(value, probs = 97.5 / 100)
+  ) %>%
+  mutate(years = parse_number(parameter1)) %>%
+  arrange(years)
+
+
+output = output1 %>% left_join(output2) 
+# %>%
+#   pivot_longer(
+#     c(medianN1, medianN2),
+#     names_to = "medianN",
+#     values_to = "valuesM")
+
+
+ggplot(output) +
+  geom_point(data = ssm_sim4, aes(x = seq(1, 25), y = y), colour = "red") +
+  geom_point(data = ssm_sim4, aes(x = seq(1, 25), y = ybis), colour = "blue")+
+  geom_line(aes(x = years, y = medianN1), colour = "red4", lty = "dashed")+
+  geom_line(aes(x = years, y = medianN2), colour = "blue4", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+
+  geom_ribbon(aes(x = years, ymin = lq2, ymax = hq2), fill = "blue", alpha = 0.3)+
+  # facet_wrap(~medianN,labeller = variable_labeller)+
+  theme_bw()+
+  labs(title = "Estimated and projected population size for each harest rate",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
 
 ## Avec le modèle exponentiel
 
@@ -1396,26 +1492,6 @@ wolf_modelexp$BUGSoutput$sims.matrix %>%
        y = "Number of wolves")
 
 ```
-
-
-# Prédiction en pondérant par rapport au DIC
-
-modele exp
-modele logi
-
-boucle de 5 a 20
-appliquer prédiction sur les 5 années suivantes
-avec 2 modeles
-
-calculer DIC
-
-simuler 5 années suivantes avec modele choisi par pondération
-
-
-## En utilisant les données du loup
-
-## En utilisant des données simulées
-
 
 
 
