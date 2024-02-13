@@ -1477,8 +1477,24 @@ output = output1 %>% left_join(output2)
        x = "Years",
        y = "Number of wolves")
 ```
+```{r}
+# Ranger les taux de croissances de chaque méthode
+lambda1=c()
+lambda2=c()
 
+for (t in 1:(nyears-1)){
+  lambda1[t]=output1$medianN1[t+1]/output1$medianN1[t]
+  lambda2[t]=output2$medianN2[t+1]/output2$medianN2[t]
+}
 
+# Compter le nombre de fois que le taux de croissance n'est pas dans l'objectif [1,1.2]
+fail1=0
+fail2=0
+for (t in 1:length(lambda1)){
+  if (between(lambda1[t],1,1.2)==FALSE){fail1=fail1+1}
+  if (between(lambda2[t],1,1.2)==FALSE){fail2=fail2+1}
+}
 
-
-
+fail1
+fail2
+```
