@@ -8,8 +8,10 @@ This folder is composed about :
     - Henrick's model (dynamic model for the lynx) and
     - Gimenez and Charpron's model (dynamix model for the wolf)
       
-- a R-script with all of my dynamic models, composed about :
+- a Rmd-script with all of my dynamic models, composed about :
     - Exponential and logistic models applied on the wolf population in France with a projection on 2 years
     - Comparaison of this 2 models supported by the DIC
     - Simulations of population size following the previous estimated data
     - Simulations of adaptive management according to the harvest rate
+
+- a R-script that count the mean of the number of failures from the different management methods to be in the objective.
