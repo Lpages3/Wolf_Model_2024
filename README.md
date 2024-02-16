@@ -14,4 +14,4 @@ This folder is composed about :
     - Simulations of population size following the previous estimated data
     - Simulations of adaptive management according to the harvest rate
 
-- a R-script that count the mean of the number of failures from the different management methods to be in the objective.
+- a R-script that counts the mean of the number of failures from the different management methods to be in the objective.
