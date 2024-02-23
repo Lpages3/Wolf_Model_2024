@@ -42,10 +42,11 @@ harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
 
 Erreur d'observation :
 ```{r}
-ObsSE=rep(0.3,27)
-# se = read_csv("se.csv") %>%
-#   as_tibble()
-
+ObsSE = rep(0.3, 27)
+se = read_csv("se.csv",
+              show_col_types = FALSE,
+              col_names = c("years", "lq", "N", "hq")) %>%
+  reframe(se = (hq - N) / 1.96)
 
 ```
 
@@ -76,18 +77,18 @@ On modélise tout ça en bayésien :
 ```{r}
 modelexp = function() {
   # Priors
-  sigmaProc ~ dunif (0, 10)
-  tauProc = 1 / sigmaProc ^ 2
+  #sigmaProc ~ dunif (0, 10)
+  #tauProc = 1 / sigmaProc ^ 2
   lambda ~ dunif(0, 5)
   
   N[1] ~ dgamma(1.0E-6, 1.0E-6)
   
   # Process model
   for (t in 2:(nyears)) {
+    tauProc[t] = 1 / sigmaProc[t-1] ^ 2
     mu[t] = lambda * (N[t-1] - h[t-1])
     NProc[t] = log(max(1, mu[t]))
-    N[t] ~ dlnorm(NProc[t], tauProc)
-   # N[t] ~ dpois(mu[t])
+    N[t] ~ dlnorm(NProc[t], tauProc[t])
   }
   
   # Observation model
@@ -99,10 +100,12 @@ modelexp = function() {
 
 Initialisation des données :
 ```{r}
-bugs.data = list(nyears = nrow(dat),
-                 y = dat$N,
-                 h = dat$H,
-                 yse=dat$se)
+bugs.data = list(
+  nyears = nrow(dat),
+  y = dat$N,
+  h = dat$H,
+  sigmaProc = c(se$se,100)
+)
 ```
 
 Paramètres JAGS :

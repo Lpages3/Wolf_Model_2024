@@ -6,7 +6,7 @@ meanfail2 = c()
 
 T1 = Sys.time()
 
-for (n in 1:20) {
+for (n in 1:15) {
   nyears = 25
   N1 = 30
   
@@ -200,7 +200,7 @@ for (n in 1:20) {
   meanfail2[n] = fail2
 }
 
-mean(meanfail1)
-mean(meanfail2)
+mean(meanfail1)/nyears
+mean(meanfail2)/nyears
 
 print (c("Le programme a duré :", Sys.time() - T1, "secondes."))
