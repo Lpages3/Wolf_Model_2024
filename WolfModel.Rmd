@@ -49,11 +49,15 @@ modelCMR = function() {
   for (t in 1:(n.occasions-1)){
     phi[t] <- mean.phi
     gamma[t] ~ dunif(0, 1) # Prior for entry probabilities
-    p[t] <- mean.p
+    p1[t] = mean.p1
+    # p2[t] = mean.p2
+    p2[t] ~ dunif(0,p1[t])
   }
   
+  mean.p1 ~ dunif(0, 1) # Prior for mean capture
+  #mean.p2 ~ dunif(0,mean.p1)
   mean.phi ~ dunif(0, 1)    # Prior for mean survival
-  mean.p ~ dunif(0, 1)      # Prior for mean capture
+  pi ~ dunif(0,1)
   
   # Define state-transition and observation matrices 	
   for (i in 1:M){  
@@ -70,24 +74,32 @@ modelCMR = function() {
       ps[3,i,t,3] <- 1
       
       # Define probabilities of O(t) given S(t)
-      po[1,i,t,1] <- 0
-      po[1,i,t,2] <- 1
-      po[2,i,t,1] <- p[t]
-      po[2,i,t,2] <- 1-p[t]
-      po[3,i,t,1] <- 0
-      po[3,i,t,2] <- 1
+      po[1,i,t,1,1] <- 0
+      po[1,i,t,2,1] <- 1
+      po[2,i,t,1,1] <- p1[t]
+      po[2,i,t,2,1] <- 1-p1[t]
+      po[3,i,t,1,1] <- 0
+      po[3,i,t,2,1] <- 1
+      
+      po[1,i,t,1,2] <- 0
+      po[1,i,t,2,2] <- 1
+      po[2,i,t,1,2] <- p2[t]
+      po[2,i,t,2,2] <- 1-p2[t]
+      po[3,i,t,1,2] <- 0
+      po[3,i,t,2,2] <- 1
     } #t
   } #i
   
   # Likelihood 
   for (i in 1:M){
+    group[i] ~ dbern(pi)
     # Define latent state at first occasion
     z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
     for (t in 2:n.occasions){
       # State process: draw S(t) given S(t-1)
       z[i,t] ~ dcat(ps[z[i,t-1], i, t-1,])
       # Observation process: draw O(t) given S(t)
-      y[i,t] ~ dcat(po[z[i,t], i, t-1,])
+      y[i,t] ~ dcat(po[z[i,t], i, t-1, ,group[i]+1])
     } #t
   } #i
   
@@ -223,13 +235,14 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
 
 
 # Parameters JAGS
-bugs.monitor = c("mean.p", "mean.phi", "b", "Nsuper", "N", "B")
+bugs.monitor = c("mean.p1","mean.p2","p2" ,"mean.phi", "b", "Nsuper", "N", "B")
 bugs.chains = 2
 
 
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
-       mean.p = runif(1, 0, 1),
+       mean.p1 = runif(1, 0, 1),
+       mean.p2 = runif(1, 0, 1),
        z = cbind(rep(NA, dim(my.z.init.ms)[1]), my.z.init.ms[,-1]))
 }
 
@@ -299,26 +312,28 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
                  M = dim(CH.ms)[1])
 
 # Parameters JAGS
-bugs.monitor = c("mean.p", "mean.phi", "b", "Nsuper", "N", "B")
+bugs.monitor = c("mean.p1","p2", "mean.phi", "b", "Nsuper", "N", "B")
 bugs.chains = 2
 
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
-    mean.p = runif(1, 0, 1),
+    mean.p1 = runif(1, 0, 1),
+    mean.p2 = runif(1, 0, 1),
     z = cbind(rep(NA, dim(z.init.ms)[1]), z.init.ms[, -1])
   )
 }
 
-# Lancement du modèle
+# Lancement du modèle (un peu long : ~1h30)
 wolf_modelCMR = jags(data = bugs.data,
                      inits = bugs.inits, 
                      parameters.to.save = bugs.monitor,
                      model.file = modelCMR,
                      n.chains = bugs.chains, 
                      n.thin=1,
-                     n.iter=2000, 
-                     n.burnin=500)
+                     n.iter=1000, 
+                     n.burnin=250)
 ```
+
 ```{r}
 print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
 ```
