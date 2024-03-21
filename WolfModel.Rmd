@@ -80,14 +80,14 @@ modelCMR = function() {
       po[2,i,t,2,1] <- 1-p1[t]
       po[3,i,t,1,1] <- 0
       po[3,i,t,2,1] <- 1
-      
+    
       po[1,i,t,1,2] <- 0
       po[1,i,t,2,2] <- 1
       po[2,i,t,1,2] <- p2[t]
       po[2,i,t,2,2] <- 1-p2[t]
       po[3,i,t,1,2] <- 0
       po[3,i,t,2,2] <- 1
-    } #t
+    } #t 
   } #i
   
   # Likelihood 
@@ -97,9 +97,9 @@ modelCMR = function() {
     z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
     for (t in 2:n.occasions){
       # State process: draw S(t) given S(t-1)
-      z[i,t] ~ dcat(ps[z[i,t-1], i, t-1,])
+      z[i, t] ~ dcat(ps[z[i, t - 1], i, t - 1, ])
       # Observation process: draw O(t) given S(t)
-      y[i,t] ~ dcat(po[z[i,t], i, t-1, ,group[i]+1])
+      y[i, t] ~ dcat(po[z[i, t], i, t - 1, , group[i] + 1])
     } #t
   } #i
   
@@ -134,7 +134,7 @@ modelCMR = function() {
     w[i] <- 1-equals(alive[i],0)
   } #i
   Nsuper <- sum(w[])            # Superpopulation size
-}
+  }
 ```
 
 ## Simulation de données
@@ -147,8 +147,25 @@ phi <- rep(0.7, n.occasions-1)           # Survival probabilities
 b <- c(0.34, rep(0.11, n.occasions-1))   # Entry probabilities 
 p <- rep(0.5, n.occasions)               # Capture probabilities
 
+p_class1 <- 0.7 # detection class 1
+p_class2 <- 0.4 # detection class 2
+prop_class1 <- 0.6 # pi
+
 PHI <- matrix(rep(phi, (n.occasions-1)*N), ncol = n.occasions-1, nrow = N, byrow = T)
-P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
+
+P = matrix(NA,ncol = n.occasions, nrow = N, byrow = T)
+which_mixture <- rep(NA, N)
+for (i in 1:N) {
+  which_mixture[i] <-
+    rbinom(1, 1, prop_class1) # assign ind i to a class with prob pi
+  if (which_mixture[i] == 1) {
+    P[i,] <- rep(p_class1,n.occasions)
+  }
+  else {
+    P[i,] <- rep(p_class2,n.occasions)
+  }
+}
+#P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
 ```
 
 Fonction qui simule des données de Capture-Recapture sous le modèle JS.
@@ -235,14 +252,13 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
 
 
 # Parameters JAGS
-bugs.monitor = c("mean.p1","mean.p2","p2" ,"mean.phi", "b", "Nsuper", "N", "B")
+bugs.monitor = c("mean.p1","p2" ,"mean.phi", "b", "Nsuper", "N", "B","pi")
 bugs.chains = 2
 
 
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
        mean.p1 = runif(1, 0, 1),
-       mean.p2 = runif(1, 0, 1),
        z = cbind(rep(NA, dim(my.z.init.ms)[1]), my.z.init.ms[,-1]))
 }
 
@@ -259,7 +275,11 @@ wolf_modelCMR = jags(data = bugs.data,
 
 ```{r}
 print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
+mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
+print(mean.p2)
 ```
+
+
 
 # Données CMR du loup
 
@@ -318,7 +338,6 @@ bugs.chains = 2
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
     mean.p1 = runif(1, 0, 1),
-    mean.p2 = runif(1, 0, 1),
     z = cbind(rep(NA, dim(z.init.ms)[1]), z.init.ms[, -1])
   )
 }
@@ -330,30 +349,19 @@ wolf_modelCMR = jags(data = bugs.data,
                      model.file = modelCMR,
                      n.chains = bugs.chains, 
                      n.thin=1,
-                     n.iter=1000, 
-                     n.burnin=250)
+                     n.iter=2000, 
+                     n.burnin=500)
+
+CMR = wolf_modelCMR$BUGSoutput$sims.list$N
+save(CMR,file="CMRdataBayesian.RData")
 ```
 
 ```{r}
 print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
+mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
+print(mean.p2)
 ```
 
-```{r}
-a= wolf_modelCMR$BUGSoutput$sims.matrix %>%
-  as_tibble() %>%
-  pivot_longer(cols = everything(),
-               values_to = "value",
-               names_to = "parameter") %>%
-  filter(str_detect(parameter, "N")) %>%
-  filter(!row_number(23)) %>% 
-  group_by(parameter) %>%
-  summarize(medianN = median(value),
-            lq = quantile(value, probs = 2.5/100),
-            hq = quantile(value, probs = 97.5/100))%>%
-  mutate(years = parse_number(parameter) + 1995)%>%
-  arrange(years)
-a
-```
 
 # Estimation et projection
 
@@ -365,6 +373,8 @@ Estimations d'effectifs par CMR :
 ```{r}
 CMR <- c(17.1,35.4,47.7,25.1,62.6,47.9,81.7,110.5,102.7,135.9,132.6,101.7,130.3,
 141.4,141.5,175.5,210.3,174.5,353.6,280.2,376.7,561.2,571.9,682.4,645.7,783.8,868)
+
+plot(CMR)
 ```
 
 Nombre de prélèvements :
@@ -374,7 +384,7 @@ harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
 
 Erreur d'observation :
 ```{r}
-ObsSE = rep(0.3, 27)
+ObsSE = rep(0.3, nyears)
 se = read_csv("se.csv",
               show_col_types = FALSE,
               col_names = c("years", "lq", "N", "hq")) %>%
@@ -384,7 +394,7 @@ se = read_csv("se.csv",
 
 On met ensemble les effectifs estimés par CMR ainsi que les nombres de loups tués.
 ```{r}
-dat <- cbind(round(CMR), ObsSE, harvest)
+dat <- cbind(round(CMR), ObsSE, harvest[1:nyears])
 colnames(dat) <- c("N", "se", "H")
 dat <- as.data.frame(dat)
 nyears <- nrow(dat)
@@ -436,7 +446,7 @@ bugs.data = list(
   nyears = nrow(dat),
   y = dat$N,
   h = dat$H,
-  sigmaProc = c(se$se,100)
+  sigmaProc = c(se$se[1:nyears-1],100)
 )
 ```
 
