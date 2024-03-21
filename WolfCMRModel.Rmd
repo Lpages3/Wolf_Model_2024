@@ -1,0 +1,749 @@
+---
+title: "WolfCMRModel"
+author: "Loïc Pages & Olivier Gimenez"
+date: "2024-03-21"
+output:
+  pdf_document: default
+  html_document: default
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Estimation d'effectif par Capture-Recapture
+
+```{r}
+library(R2jags)
+library(tidyverse)
+```
+
+
+```{r}
+modelCMR = function() {
+ 
+  #--------------------------------------
+  # Parameters:
+  # phi: survival probability
+  # gamma: removal entry probability
+  # p: capture probability
+  #--------------------------------------
+  # States (S):
+  # 1 not yet entered
+  # 2 alive
+  # 3 dead
+  # Observations (O):
+  # 1 seen 
+  # 2 not seen
+  #--------------------------------------
+  
+  # Priors and constraints
+  for (t in 1:(n.occasions-1)){
+    phi[t] <- mean.phi
+    gamma[t] ~ dunif(0, 1) # Prior for entry probabilities
+    p1[t] = mean.p1
+    # p2[t] = mean.p2
+    p2[t] ~ dunif(0,p1[t])
+  }
+  
+  mean.p1 ~ dunif(0, 1) # Prior for mean capture
+  #mean.p2 ~ dunif(0,mean.p1)
+  mean.phi ~ dunif(0, 1)    # Prior for mean survival
+  pi ~ dunif(0,1)
+  
+  # Define state-transition and observation matrices 	
+  for (i in 1:M){  
+    # Define probabilities of state S(t+1) given S(t)
+    for (t in 1:(n.occasions-1)){
+      ps[1,i,t,1] <- 1-gamma[t]
+      ps[1,i,t,2] <- gamma[t]
+      ps[1,i,t,3] <- 0
+      ps[2,i,t,1] <- 0
+      ps[2,i,t,2] <- phi[t]
+      ps[2,i,t,3] <- 1-phi[t]
+      ps[3,i,t,1] <- 0
+      ps[3,i,t,2] <- 0
+      ps[3,i,t,3] <- 1
+      
+      # Define probabilities of O(t) given S(t)
+      po[1,i,t,1,1] <- 0
+      po[1,i,t,2,1] <- 1
+      po[2,i,t,1,1] <- p1[t]
+      po[2,i,t,2,1] <- 1-p1[t]
+      po[3,i,t,1,1] <- 0
+      po[3,i,t,2,1] <- 1
+    
+      po[1,i,t,1,2] <- 0
+      po[1,i,t,2,2] <- 1
+      po[2,i,t,1,2] <- p2[t]
+      po[2,i,t,2,2] <- 1-p2[t]
+      po[3,i,t,1,2] <- 0
+      po[3,i,t,2,2] <- 1
+    } #t 
+  } #i
+  
+  # Likelihood 
+  for (i in 1:M){
+    group[i] ~ dbern(pi)
+    # Define latent state at first occasion
+    z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
+    for (t in 2:n.occasions){
+      # State process: draw S(t) given S(t-1)
+      z[i, t] ~ dcat(ps[z[i, t - 1], i, t - 1, ])
+      # Observation process: draw O(t) given S(t)
+      y[i, t] ~ dcat(po[z[i, t], i, t - 1, , group[i] + 1])
+    } #t
+  } #i
+  
+  # Calculate derived population parameters
+  for (t in 1:(n.occasions-1)){
+    qgamma[t] <- 1-gamma[t]
+  }
+  cprob[1] <- gamma[1]
+  for (t in 2:(n.occasions-1)){
+    cprob[t] <- gamma[t] * prod(qgamma[1:(t-1)])
+  } #t
+  psi <- sum(cprob[])            # Inclusion probability
+  for (t in 1:(n.occasions-1)){
+    b[t] <- cprob[t] / psi      # Entry probability
+  } #t
+  
+  for (i in 1:M){
+    for (t in 2:n.occasions){
+      al[i,t-1] <- equals(z[i,t], 2)
+    } #t
+    for (t in 1:(n.occasions-1)){
+      d[i,t] <- equals(z[i,t]-al[i,t],0)
+    } #t   
+    alive[i] <- sum(al[i,])
+  } #i
+  
+  for (t in 1:(n.occasions-1)){
+    N[t] <- sum(al[,t])        # Actual population size
+    B[t] <- sum(d[,t])         # Number of entries
+  } #t
+  for (i in 1:M){
+    w[i] <- 1-equals(alive[i],0)
+  } #i
+  Nsuper <- sum(w[])            # Superpopulation size
+  }
+```
+
+## Simulation de données
+
+Données de simulation
+```{r}
+n.occasions <- 7                        # Number of capture occasions
+N <- 400                                 # Superpopulation size
+phi <- rep(0.7, n.occasions-1)           # Survival probabilities
+b <- c(0.34, rep(0.11, n.occasions-1))   # Entry probabilities 
+p <- rep(0.5, n.occasions)               # Capture probabilities
+
+p_class1 <- 0.7 # detection class 1
+p_class2 <- 0.4 # detection class 2
+prop_class1 <- 0.6 # pi
+
+PHI <- matrix(rep(phi, (n.occasions-1)*N), ncol = n.occasions-1, nrow = N, byrow = T)
+
+P = matrix(NA,ncol = n.occasions, nrow = N, byrow = T)
+which_mixture <- rep(NA, N)
+for (i in 1:N) {
+  which_mixture[i] <-
+    rbinom(1, 1, prop_class1) # assign ind i to a class with prob pi
+  if (which_mixture[i] == 1) {
+    P[i,] <- rep(p_class1,n.occasions)
+  }
+  else {
+    P[i,] <- rep(p_class2,n.occasions)
+  }
+}
+#P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
+```
+
+Fonction qui simule des données de Capture-Recapture sous le modèle JS.
+```{r}
+simul.js <- function(PHI, P, b, N){
+  B <- rmultinom(1, N, b) # Generate no. of entering ind. per occasion
+  n.occasions <- dim(PHI)[2] + 1
+  CH.sur <- CH.p <- matrix(0, ncol = n.occasions, nrow = N)
+  # Define a vector with the occasion of entering the population
+  ent.occ <- numeric()
+  for (t in 1:n.occasions){
+    ent.occ <- c(ent.occ, rep(t, B[t]))
+  }
+  # Simulating survival
+  for (i in 1:N){
+    CH.sur[i, ent.occ[i]] <- 1   # Write 1 when ind. enters the pop.
+    if (ent.occ[i] == n.occasions) next
+    for (t in (ent.occ[i]+1):n.occasions){
+      # Bernoulli trial: has individual survived occasion?
+      sur <- rbinom(1, 1, PHI[i,t-1])
+      ifelse (sur==1, CH.sur[i,t] <- 1, break)
+    } #t
+  } #i
+  # Simulating capture
+  for (i in 1:N){
+    CH.p[i,] <- rbinom(n.occasions, 1, P[i,])
+  } #i
+  # Full capture-recapture matrix
+  CH <- CH.sur * CH.p
+  
+  # Remove individuals never captured
+  cap.sum <- rowSums(CH)
+  never <- which(cap.sum == 0)
+  CH <- CH[-never,]
+  Nt <- colSums(CH.sur)    # Actual population size
+  return(list(CH=CH, B=B, N=Nt))
+}
+
+```
+
+Lancer la simulation
+```{r}
+sim <- simul.js(PHI, P, b, N)
+CH <- sim$CH
+```
+
+Préparation des données
+```{r}
+# Add dummy occasion
+CH.du <- cbind(rep(0, dim(CH)[1]), CH)
+
+my.z.init <- CH.du
+
+first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
+last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
+
+for(i in 1:nrow(my.z.init)) {
+  my.z.init[i, first.one[i]  : last.one[i]] = 2                           
+  # 2 indique que l'on est sûr que l'individu est vivant
+  if(first.one[i] > 1) my.z.init[i,1  : (first.one[i] - 1) ] = 1          
+  # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
+  if(last.one[i] < ncol(my.z.init)) my.z.init[i, (last.one[i] + 1) : ncol(my.z.init)    ] = 3 
+  # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
+}
+
+# Augment data
+nz <- 150
+
+CH.ms <- rbind(CH.du, matrix(0, ncol = dim(CH.du)[2], nrow = nz))
+
+# Recode CH matrix: a 0 is not allowed in WinBUGS!
+CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
+
+my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
+my.z.init.ms[my.z.init.ms==0] <- 1
+```
+
+Préparation des paramètres jags
+```{r}
+# Initialisation des données
+bugs.data = list(n.occasions = dim(CH.ms)[2],
+                 y = CH.ms,
+                 M = dim(CH.ms)[1])
+
+
+# Parameters JAGS
+bugs.monitor = c("mean.p1","p2" ,"mean.phi", "b", "Nsuper", "N", "B","pi")
+bugs.chains = 2
+
+
+bugs.inits = function() {
+  list(mean.phi = runif(1, 0, 1),
+       mean.p1 = runif(1, 0, 1),
+       z = cbind(rep(NA, dim(my.z.init.ms)[1]), my.z.init.ms[,-1]))
+}
+
+# Lancement du modèle
+wolf_modelCMR = jags(data = bugs.data,
+                     inits = bugs.inits, 
+                     parameters.to.save = bugs.monitor,
+                     model.file = modelCMR,
+                     n.chains = bugs.chains, 
+                     n.thin=1,
+                     n.iter=2000, 
+                     n.burnin=500)
+```
+
+```{r}
+print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
+mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
+print(mean.p2)
+```
+
+
+# Données CMR du loup
+
+```{r}
+setwd("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model")
+CMR=readRDS("CMR/dat/cmrlouphiver.rds")
+
+CH=data.matrix(CMR)
+
+n.occasions = dim(CH)[2]
+```
+
+Add dummy occasion
+```{r}
+CH.du <- cbind(rep(0, dim(CH)[1]), CH)
+
+z.init <- CH.du
+
+first.one <- apply(z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
+last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
+
+for(i in 1:nrow(z.init)) {
+  z.init[i, first.one[i]  : last.one[i]] = 2                           # 2 indique que l'on est sûr que l'individu est vivant
+  if(first.one[i] > 1) z.init[i,1  : (first.one[i] - 1) ] = 1          # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
+  if(last.one[i] < ncol(z.init)) z.init[i, (last.one[i] + 1) : ncol(z.init)    ] = 3 # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
+}
+```
+
+Augment data
+```{r}
+nz <- 150
+aug = matrix(0, ncol = dim(CH.du)[2], nrow = nz)
+CH.ms = rbind(CH.du, aug)
+```
+
+Recode CH matrix: a 0 is not allowed in WinBUGS!
+```{r}
+CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
+# Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté pour le moment
+
+z.init.ms = rbind(z.init, aug)
+z.init.ms[z.init.ms == 0] = 1
+```
+
+Paramètres jags
+```{r}
+# Initialisation des données
+bugs.data = list(n.occasions = dim(CH.ms)[2],
+                 y = CH.ms,
+                 M = dim(CH.ms)[1])
+
+# Parameters JAGS
+bugs.monitor = c("mean.p1","p2", "mean.phi", "b", "Nsuper", "N", "B")
+bugs.chains = 2
+
+bugs.inits = function() {
+  list(mean.phi = runif(1, 0, 1),
+    mean.p1 = runif(1, 0, 1),
+    z = cbind(rep(NA, dim(z.init.ms)[1]), z.init.ms[, -1])
+  )
+}
+
+# Lancement du modèle (un peu long : ~1h30)
+wolf_modelCMR = jags(data = bugs.data,
+                     inits = bugs.inits, 
+                     parameters.to.save = bugs.monitor,
+                     model.file = modelCMR,
+                     n.chains = bugs.chains, 
+                     n.thin=1,
+                     n.iter=2000, 
+                     n.burnin=500)
+
+CMR = wolf_modelCMR$BUGSoutput$sims.list$N
+save(CMR,file="CMRdataBayesian.RData")
+```
+
+```{r}
+print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
+mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
+print(mean.p2)
+```
+
+
+
+Estimations d'effectifs par CMR :
+```{r}
+load("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model/CMRdataBayesian.RData")
+```
+
+Arranger les données
+```{r}
+CMRi=list()
+for (i in 1:8){
+  CMRi[[i]]=matrix(0,375,22)
+  for (t in 1:375){
+    for (x in 1:22){
+     CMRi[[i]][t,x]=CMR[(i-1)*375+t,x]
+    }
+  }
+  CMRi[[i]] = CMRi[[i]] %>% 
+  as_tibble(name_repair) %>% 
+  pivot_longer(cols = everything(), values_to = "value", names_to = "parameter") %>% 
+  group_by(parameter) %>% 
+  summarise(N=round(mean(value))) %>%
+  mutate(years = parse_number(parameter) + 1995)%>%
+  arrange(years)
+}
+
+nyears=length(CMRi[[1]]$N)
+```
+
+Nombre de prélèvements :
+```{r}
+harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42)
+```
+
+
+
+# Modèles d'estimation et de prédiction à cours terme
+
+## Modèle exponentiel
+
+Dans ce modèle, l'effectif de la population suit une croissance exponentielle. On soustrait le nombre de prélèvement à l'effectif de la population au temps $t-1$ puis on le multiplie par le taux de reproduction $\lambda$. On obtient l'effectif de la population au temps $t$.
+$$N_{t} = \lambda (N_{t-1} - H_{t-1}).$$
+On ajoute à cette relation déterministe de la stochasticité. Ici l'effectif de la population au temps $t$ suit un loi log-normale, c'est à dire que les effectifs sont normalement distribués sur l'échelle log :
+$$\log(N_{t}) \sim \text{Normale}(\mu_{t}, \sigma_{\text{proc}})$$
+avec la moyenne $\mu_{t} = \log(N_{t}) = \log(\lambda (N_{t-1} - H_{t-1}))$ et $\sigma_{\text{proc}}$ l'erreur standard des effectifs.
+On utilise une loi log-normale plutôt qu'une loi de Poisson car les estimations semblent être plus précises et suivent mieux les données observées.
+
+On ajoute les effectifs observés $y_t$ qui suivent une loi de Poisson de paramètre l'effectif estimé au temps $t$.
+$$y_t \sim \text{Poisson}(N_t).$$On va maintenant ajouter une projection sur 2 ans pour différents taux de prélèvement :
+
+```{r}
+dH = c(0, 0.10, 0.20, 0.30)
+```
+
+Le modèle est le même que précédemment à l'exeption de la partie Projected model qui ajoute les prédicitions au modèle.
+
+```{r}
+modelexp = function() {
+  # Priors
+  sigmaProc ~ dunif (0, 10)
+  tauProc = 1 / sigmaProc ^ 2
+  lambda ~ dunif(0, 5)
+  
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+  
+  # Process model
+  for (t in 2:(nyears)) {
+    mu[t] = lambda * (N[t - 1] - h[t - 1])
+    NProc[t] = log(max(1, mu[t]))
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+  
+  # Observation model
+  for (t in 1:nyears) {
+    y[t] ~ dpois(N[t])
+  }
+  
+  # Projected model
+  for (t in (nyears + 1):(nyears + 2)) {
+    mu[t] = (lambda - dH) * N[t - 1]
+    NProc[t] = log(max(1, mu[t]))
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+}
+```
+
+On lance la machine pour chaque taux de prélevement.
+
+```{r,results='hide'}
+for (i in 1:4) {
+  # Initialisation des données
+  bugs.data = list(
+    nyears = nyears,
+    y = c(CMRi[[i]]$N, rep(NA, 2)),
+    dH = dH[i],
+    h = harvest
+  )
+  
+  # Paramètres jags
+  bugs.monitor = c("lambda", "sigmaProc", "N", "tauProc")
+  bugs.chains = 3
+  bugs.inits = function() {
+    list()
+  }
+  
+# Lancement du modèle
+
+wolf_modelexp = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modelexp,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+
+if (i==1){
+output1 = wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter1") %>%
+  filter(str_detect(parameter1, "N")) %>%
+  group_by(parameter1) %>%
+  summarize(medianN1 = median(value),
+            lq1 = quantile(value, probs = 2.5/100),
+            hq1 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter1) + 1995)%>%
+  arrange(years)%>%
+  mutate(ObsY = bugs.data$y)
+}
+
+if(i==2){
+  output2 = wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter2") %>%
+  filter(str_detect(parameter2, "N")) %>%
+  group_by(parameter2) %>%
+  summarize(medianN2 = median(value),
+            lq2 = quantile(value, probs = 2.5/100),
+            hq2 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter2) + 1995)%>%
+  arrange(years)
+}
+
+if(i==3){
+  output3 = wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter3") %>%
+  filter(str_detect(parameter3, "N")) %>%
+  group_by(parameter3) %>%
+  summarize(medianN3 = median(value),
+            lq3 = quantile(value, probs = 2.5/100),
+            hq3 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter3) + 1995)%>%
+  arrange(years) 
+}
+
+if(i==4){
+  output4 = wolf_modelexp$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter4") %>%
+  filter(str_detect(parameter4, "N")) %>%
+  group_by(parameter4) %>%
+  summarize(medianN4 = median(value),
+            lq4 = quantile(value, probs = 2.5/100),
+            hq4 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter4) + 1995)%>%
+  arrange(years)
+}
+}
+```
+
+On affiche les courbes d'effectifs :
+
+```{r,warning=FALSE}
+output = output1 %>% left_join(output2) %>%
+  left_join(output3) %>%
+  left_join(output4) %>%
+  pivot_longer(
+    c(medianN1, medianN2, medianN3, medianN4),
+    names_to = "medianN",
+    values_to = "valuesM")
+
+variable_names <- list(
+  "medianN1" = "Harvest : 0%" ,
+  "medianN2" = "Harvest : 10%",
+  "medianN3" = "Harvest : 20%",
+  "medianN4" = "Harvest : 30%")
+
+variable_labeller <- function(variable, value) {
+  return(variable_names[value])
+}
+
+  ggplot(output)+
+  geom_point(aes(x = years, y = ObsY)) + 
+  coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
+  aes(x = years, y = valuesM)+
+  geom_line(colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+
+  facet_wrap(~medianN,labeller = variable_labeller)+
+  theme_bw()+
+  labs(title = "Estimated and projected population size for each harest rate",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
+## Modèle logistique
+
+On définit ici d'abordDans ce modèle, l'effectif de la population suit une croissance logistique, c'est à dire que la population croit de manière exponentielle puis est limitée par une capacité de charge.
+On soustrait le nombre de prélevements à l'effectif de la population au temps $t-1$. Puis en utilisant ce résultat on calcule $$\lambda_{t} = N_{t-1} \times \exp(\alpha(1-\frac{N_{t-1}}{K})$$, avec $K$ la capactié de charge.
+
+On ajoute à cette relation déterministe de la stochasticité. L’effectif de la population au temps t suit une
+loi log-normale, c’est à dire que les effectifs sont normalement distribués sur l’échelle log :
+
+$$log(N_t) \sim \text{Normale}(log(\lambda_{t-1}),\sigma_\text{proc})$$
+avec $\sigma_\text{proc}$ l'erreur standard des effectifs.
+
+On ajoute les effectifs observés yt qui suivent une loi de Poisson de paramètre l’effectif estimé au temps $t$.
+$$y_t\sim\text{Poisson}(N_t)$$
+
+
+On va maintenant ajouter une projection sur 2 ans pour différents taux de prélèvement :
+
+```{r}
+dH = c(0, 0.10, 0.20, 0.30)
+```
+
+Le modèle est le même que précédemment à l'exeption de la partie Projected model qui ajoute les prédicitions au modèle.
+
+```{r}
+modellogist = function() {
+  # Priors
+  sigmaProc ~ dunif (0, 5)
+  tauProc = 1 / sigmaProc ^ 2
+  alpha ~ dunif(0, 1.0986) #maximum exponential growth rate
+  K ~ dunif(1, 1000)         #carrying capacity
+  
+  N[1] ~ dgamma(1.0E-6, 1.0E-6)
+  
+  # Process model
+  for (t in 2:(nyears)) {
+    u[t-1] = N[t-1] - h[t-1]
+    Er[t] = exp(alpha * (1 - u[t-1] / K)) # per capita growth rate is density dependent - Ricker model
+    lambda[t] = u[t-1] * Er[t]
+    NProc[t] = log(max(1, lambda[t]))
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+  # Observation model
+  for (t in 1:(nyears)) {
+    y[t] ~ dpois(N[t])
+  }
+  #Projected population
+    for (t in (nyears+1):(nyears+2)) {
+    u[t-1] = (1-dH) * N[t-1]
+    Er[t] = exp(alpha * (1 - u[t-1] / K)) # per capita growth rate is density dependent - Ricker model
+    lambda[t] = u[t-1] * Er[t]
+    NProc[t] = log(max(1, lambda[t]))
+    N[t] ~ dlnorm(NProc[t], tauProc)
+  }
+}
+```
+
+On lance la machine pour chaque taux et on affiche la courbe d'effectifs : 
+
+```{r,results='hide'}
+for (i in 1:4) {
+  # Initialisation des données
+  bugs.data = list(
+    nyears = nyears,
+    y = c(CMRi[[i+4]]$N, rep(NA, 2)),
+    dH = dH[i],
+    h = harvest
+  )
+  
+  # Paramètres jags
+  bugs.monitor = c("alpha", "sigmaProc", "tauProc", "K", "N")
+  bugs.chains = 3
+  init1 = list(alpha = .5, sigmaProc = .25)
+  init2 = list(alpha = .1, sigmaProc = .05)
+  init3 = list(alpha = 1, sigmaProc = .45)
+  bugs.inits = list(init1, init2, init3)
+  
+  # Lancement du modèle
+
+wolf_modellogist = jags(data = bugs.data,
+                   inits = bugs.inits, 
+                   parameters.to.save = bugs.monitor,
+                   model.file = modellogist,
+                   n.chains = bugs.chains, 
+                   n.thin=10,
+                   n.iter=100000, 
+                   n.burnin=50000)
+
+if (i==1){
+output1 = wolf_modellogist$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter1") %>%
+  filter(str_detect(parameter1, "N")) %>%
+  group_by(parameter1) %>%
+  summarize(medianN1 = median(value),
+            lq1 = quantile(value, probs = 2.5/100),
+            hq1 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter1) + 1995)%>%
+  arrange(years)%>%
+  mutate(ObsY = bugs.data$y)
+}
+
+if(i==2){
+  output2 = wolf_modellogist$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter2") %>%
+  filter(str_detect(parameter2, "N")) %>%
+  group_by(parameter2) %>%
+  summarize(medianN2 = median(value),
+            lq2 = quantile(value, probs = 2.5/100),
+            hq2 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter2) + 1995)%>%
+  arrange(years)
+}
+
+if(i==3){
+  output3 = wolf_modellogist$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter3") %>%
+  filter(str_detect(parameter3, "N")) %>%
+  group_by(parameter3) %>%
+  summarize(medianN3 = median(value),
+            lq3 = quantile(value, probs = 2.5/100),
+            hq3 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter3) + 1995)%>%
+  arrange(years) 
+}
+
+if(i==4){
+  output4 = wolf_modellogist$BUGSoutput$sims.matrix %>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter4") %>%
+  filter(str_detect(parameter4, "N")) %>%
+  group_by(parameter4) %>%
+  summarize(medianN4 = median(value),
+            lq4 = quantile(value, probs = 2.5/100),
+            hq4 = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter4) + 1995)%>%
+  arrange(years)
+}
+}
+```
+
+On affiche les estimations et projections pour chaque taux de prélevement :
+
+```{r,warning=FALSE}
+output = output1 %>% left_join(output2) %>%
+  left_join(output3) %>%
+  left_join(output4) %>%
+  pivot_longer(
+    c(medianN1, medianN2, medianN3, medianN4),
+    names_to = "medianN",
+    values_to = "valuesM")
+
+variable_names <- list(
+  "medianN1" = "Harvest : 0%" ,
+  "medianN2" = "Harvest : 10%",
+  "medianN3" = "Harvest : 20%",
+  "medianN4" = "Harvest : 30%")
+
+variable_labeller <- function(variable, value) {
+  return(variable_names[value])
+}
+
+  ggplot(output)+
+  geom_point(aes(x = years, y = ObsY)) + 
+  coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
+  aes(x = years, y = valuesM)+
+  geom_line(colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+
+  facet_wrap(~medianN,labeller = variable_labeller)+
+  theme_bw()+
+  labs(title = "Estimated and projected population size for each harest rate",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
+
+
+
+
+
+
+
+
+
