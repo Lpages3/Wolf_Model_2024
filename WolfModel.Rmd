@@ -20,352 +20,16 @@ Les modèle exponentiel d'estimation utilisé dans ce code provient de l'article
 
 Dans un dernier temps, nous simulerons des données à l'aide des paramètres estimés afin de voir si les estimations collent avec tous types de données. Puis nous pourrons faire une projection sur 20 ans avec les deux types de modèle.
 
-# Estimation d'effectif par Capture-Recapture
-
-```{r}
-library(R2jags)
-library(tidyverse)
-```
-
-```{r}
-modelCMR = function() {
- 
-  #--------------------------------------
-  # Parameters:
-  # phi: survival probability
-  # gamma: removal entry probability
-  # p: capture probability
-  #--------------------------------------
-  # States (S):
-  # 1 not yet entered
-  # 2 alive
-  # 3 dead
-  # Observations (O):
-  # 1 seen 
-  # 2 not seen
-  #--------------------------------------
-  
-  # Priors and constraints
-  for (t in 1:(n.occasions-1)){
-    phi[t] <- mean.phi
-    gamma[t] ~ dunif(0, 1) # Prior for entry probabilities
-    p1[t] = mean.p1
-    # p2[t] = mean.p2
-    p2[t] ~ dunif(0,p1[t])
-  }
-  
-  mean.p1 ~ dunif(0, 1) # Prior for mean capture
-  #mean.p2 ~ dunif(0,mean.p1)
-  mean.phi ~ dunif(0, 1)    # Prior for mean survival
-  pi ~ dunif(0,1)
-  
-  # Define state-transition and observation matrices 	
-  for (i in 1:M){  
-    # Define probabilities of state S(t+1) given S(t)
-    for (t in 1:(n.occasions-1)){
-      ps[1,i,t,1] <- 1-gamma[t]
-      ps[1,i,t,2] <- gamma[t]
-      ps[1,i,t,3] <- 0
-      ps[2,i,t,1] <- 0
-      ps[2,i,t,2] <- phi[t]
-      ps[2,i,t,3] <- 1-phi[t]
-      ps[3,i,t,1] <- 0
-      ps[3,i,t,2] <- 0
-      ps[3,i,t,3] <- 1
-      
-      # Define probabilities of O(t) given S(t)
-      po[1,i,t,1,1] <- 0
-      po[1,i,t,2,1] <- 1
-      po[2,i,t,1,1] <- p1[t]
-      po[2,i,t,2,1] <- 1-p1[t]
-      po[3,i,t,1,1] <- 0
-      po[3,i,t,2,1] <- 1
-    
-      po[1,i,t,1,2] <- 0
-      po[1,i,t,2,2] <- 1
-      po[2,i,t,1,2] <- p2[t]
-      po[2,i,t,2,2] <- 1-p2[t]
-      po[3,i,t,1,2] <- 0
-      po[3,i,t,2,2] <- 1
-    } #t 
-  } #i
-  
-  # Likelihood 
-  for (i in 1:M){
-    group[i] ~ dbern(pi)
-    # Define latent state at first occasion
-    z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
-    for (t in 2:n.occasions){
-      # State process: draw S(t) given S(t-1)
-      z[i, t] ~ dcat(ps[z[i, t - 1], i, t - 1, ])
-      # Observation process: draw O(t) given S(t)
-      y[i, t] ~ dcat(po[z[i, t], i, t - 1, , group[i] + 1])
-    } #t
-  } #i
-  
-  # Calculate derived population parameters
-  for (t in 1:(n.occasions-1)){
-    qgamma[t] <- 1-gamma[t]
-  }
-  cprob[1] <- gamma[1]
-  for (t in 2:(n.occasions-1)){
-    cprob[t] <- gamma[t] * prod(qgamma[1:(t-1)])
-  } #t
-  psi <- sum(cprob[])            # Inclusion probability
-  for (t in 1:(n.occasions-1)){
-    b[t] <- cprob[t] / psi      # Entry probability
-  } #t
-  
-  for (i in 1:M){
-    for (t in 2:n.occasions){
-      al[i,t-1] <- equals(z[i,t], 2)
-    } #t
-    for (t in 1:(n.occasions-1)){
-      d[i,t] <- equals(z[i,t]-al[i,t],0)
-    } #t   
-    alive[i] <- sum(al[i,])
-  } #i
-  
-  for (t in 1:(n.occasions-1)){
-    N[t] <- sum(al[,t])        # Actual population size
-    B[t] <- sum(d[,t])         # Number of entries
-  } #t
-  for (i in 1:M){
-    w[i] <- 1-equals(alive[i],0)
-  } #i
-  Nsuper <- sum(w[])            # Superpopulation size
-  }
-```
-
-## Simulation de données
-
-Données de simulation
-```{r}
-n.occasions <- 7                        # Number of capture occasions
-N <- 400                                 # Superpopulation size
-phi <- rep(0.7, n.occasions-1)           # Survival probabilities
-b <- c(0.34, rep(0.11, n.occasions-1))   # Entry probabilities 
-p <- rep(0.5, n.occasions)               # Capture probabilities
-
-p_class1 <- 0.7 # detection class 1
-p_class2 <- 0.4 # detection class 2
-prop_class1 <- 0.6 # pi
-
-PHI <- matrix(rep(phi, (n.occasions-1)*N), ncol = n.occasions-1, nrow = N, byrow = T)
-
-P = matrix(NA,ncol = n.occasions, nrow = N, byrow = T)
-which_mixture <- rep(NA, N)
-for (i in 1:N) {
-  which_mixture[i] <-
-    rbinom(1, 1, prop_class1) # assign ind i to a class with prob pi
-  if (which_mixture[i] == 1) {
-    P[i,] <- rep(p_class1,n.occasions)
-  }
-  else {
-    P[i,] <- rep(p_class2,n.occasions)
-  }
-}
-#P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
-```
-
-Fonction qui simule des données de Capture-Recapture sous le modèle JS.
-```{r}
-simul.js <- function(PHI, P, b, N){
-  B <- rmultinom(1, N, b) # Generate no. of entering ind. per occasion
-  n.occasions <- dim(PHI)[2] + 1
-  CH.sur <- CH.p <- matrix(0, ncol = n.occasions, nrow = N)
-  # Define a vector with the occasion of entering the population
-  ent.occ <- numeric()
-  for (t in 1:n.occasions){
-    ent.occ <- c(ent.occ, rep(t, B[t]))
-  }
-  # Simulating survival
-  for (i in 1:N){
-    CH.sur[i, ent.occ[i]] <- 1   # Write 1 when ind. enters the pop.
-    if (ent.occ[i] == n.occasions) next
-    for (t in (ent.occ[i]+1):n.occasions){
-      # Bernoulli trial: has individual survived occasion?
-      sur <- rbinom(1, 1, PHI[i,t-1])
-      ifelse (sur==1, CH.sur[i,t] <- 1, break)
-    } #t
-  } #i
-  # Simulating capture
-  for (i in 1:N){
-    CH.p[i,] <- rbinom(n.occasions, 1, P[i,])
-  } #i
-  # Full capture-recapture matrix
-  CH <- CH.sur * CH.p
-  
-  # Remove individuals never captured
-  cap.sum <- rowSums(CH)
-  never <- which(cap.sum == 0)
-  CH <- CH[-never,]
-  Nt <- colSums(CH.sur)    # Actual population size
-  return(list(CH=CH, B=B, N=Nt))
-}
-
-```
-
-Lancer la simulation
-```{r}
-sim <- simul.js(PHI, P, b, N)
-CH <- sim$CH
-```
-
-Préparation des données
-```{r}
-# Add dummy occasion
-CH.du <- cbind(rep(0, dim(CH)[1]), CH)
-
-my.z.init <- CH.du
-
-first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
-
-for(i in 1:nrow(my.z.init)) {
-  my.z.init[i, first.one[i]  : last.one[i]] = 2                           
-  # 2 indique que l'on est sûr que l'individu est vivant
-  if(first.one[i] > 1) my.z.init[i,1  : (first.one[i] - 1) ] = 1          
-  # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
-  if(last.one[i] < ncol(my.z.init)) my.z.init[i, (last.one[i] + 1) : ncol(my.z.init)    ] = 3 
-  # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
-}
-
-# Augment data
-nz <- 150
-
-CH.ms <- rbind(CH.du, matrix(0, ncol = dim(CH.du)[2], nrow = nz))
-
-# Recode CH matrix: a 0 is not allowed in WinBUGS!
-CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
-
-my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
-my.z.init.ms[my.z.init.ms==0] <- 1
-```
-
-Préparation des paramètres jags
-```{r}
-# Initialisation des données
-bugs.data = list(n.occasions = dim(CH.ms)[2],
-                 y = CH.ms,
-                 M = dim(CH.ms)[1])
-
-
-# Parameters JAGS
-bugs.monitor = c("mean.p1","p2" ,"mean.phi", "b", "Nsuper", "N", "B","pi")
-bugs.chains = 2
-
-
-bugs.inits = function() {
-  list(mean.phi = runif(1, 0, 1),
-       mean.p1 = runif(1, 0, 1),
-       z = cbind(rep(NA, dim(my.z.init.ms)[1]), my.z.init.ms[,-1]))
-}
-
-# Lancement du modèle
-wolf_modelCMR = jags(data = bugs.data,
-                     inits = bugs.inits, 
-                     parameters.to.save = bugs.monitor,
-                     model.file = modelCMR,
-                     n.chains = bugs.chains, 
-                     n.thin=1,
-                     n.iter=2000, 
-                     n.burnin=500)
-```
-
-```{r}
-print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
-mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
-print(mean.p2)
-```
-
-
-
-# Données CMR du loup
-
-```{r}
-setwd("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model")
-CMR=readRDS("CMR/dat/cmrlouphiver.rds")
-
-CH=data.matrix(CMR)
-
-n.occasions = dim(CH)[2]
-```
-
-Add dummy occasion
-```{r}
-CH.du <- cbind(rep(0, dim(CH)[1]), CH)
-
-z.init <- CH.du
-
-first.one <- apply(z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
-
-for(i in 1:nrow(z.init)) {
-  z.init[i, first.one[i]  : last.one[i]] = 2                           # 2 indique que l'on est sûr que l'individu est vivant
-  if(first.one[i] > 1) z.init[i,1  : (first.one[i] - 1) ] = 1          # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
-  if(last.one[i] < ncol(z.init)) z.init[i, (last.one[i] + 1) : ncol(z.init)    ] = 3 # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
-}
-```
-
-Augment data
-```{r}
-nz <- 150
-aug = matrix(0, ncol = dim(CH.du)[2], nrow = nz)
-CH.ms = rbind(CH.du, aug)
-```
-
-Recode CH matrix: a 0 is not allowed in WinBUGS!
-```{r}
-CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
-# Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté pour le moment
-
-z.init.ms = rbind(z.init, aug)
-z.init.ms[z.init.ms == 0] = 1
-```
-
-Paramètres jags
-```{r}
-# Initialisation des données
-bugs.data = list(n.occasions = dim(CH.ms)[2],
-                 y = CH.ms,
-                 M = dim(CH.ms)[1])
-
-# Parameters JAGS
-bugs.monitor = c("mean.p1","p2", "mean.phi", "b", "Nsuper", "N", "B")
-bugs.chains = 2
-
-bugs.inits = function() {
-  list(mean.phi = runif(1, 0, 1),
-    mean.p1 = runif(1, 0, 1),
-    z = cbind(rep(NA, dim(z.init.ms)[1]), z.init.ms[, -1])
-  )
-}
-
-# Lancement du modèle (un peu long : ~1h30)
-wolf_modelCMR = jags(data = bugs.data,
-                     inits = bugs.inits, 
-                     parameters.to.save = bugs.monitor,
-                     model.file = modelCMR,
-                     n.chains = bugs.chains, 
-                     n.thin=1,
-                     n.iter=2000, 
-                     n.burnin=500)
-
-CMR = wolf_modelCMR$BUGSoutput$sims.list$N
-save(CMR,file="CMRdataBayesian.RData")
-```
-
-```{r}
-print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
-mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
-print(mean.p2)
-```
-
 
 # Estimation et projection
 
 ## Préparation
+
+Dans ce script nous utiliserons les deux packages suivants : R2jags et tidyverse
+```{r}
+library(R2jags)
+library(tidyverse)
+```
 
 ### Les données
 
@@ -373,13 +37,12 @@ Estimations d'effectifs par CMR :
 ```{r}
 CMR <- c(17.1,35.4,47.7,25.1,62.6,47.9,81.7,110.5,102.7,135.9,132.6,101.7,130.3,
 141.4,141.5,175.5,210.3,174.5,353.6,280.2,376.7,561.2,571.9,682.4,645.7,783.8,868)
-
-plot(CMR)
 ```
 
 Nombre de prélèvements :
 ```{r}
 harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169)
+hrate = harvest/CMR
 ```
 
 Erreur d'observation :
@@ -1700,8 +1363,9 @@ for (nyears in seq(2,nyears,pas)) { # Boucle sur le nombre de tranches d'années
     for (t in 1:(l-5)) {
       lamb[t] = Nest[t+1] / Nest[t]}
     lambda = mean(lamb)
+    #lambda = Nest[nyears+1] / Nest[nyears]
     print(lambda)
-  
+    
     # Conditions de modification du taux de prélevement
     if (lambda < 1.2) {H = 0}
     if (lambda >= 1.2 & lambda < 1.3) {H = 0.1}
@@ -1822,6 +1486,7 @@ output = output1 %>% left_join(output2)
        x = "Years",
        y = "Number of wolves")
 ```
+
 ```{r}
 # Ranger les taux de croissances de chaque méthode
 lambda1=c()
@@ -1840,6 +1505,6 @@ for (t in 1:length(lambda1)){
   if (between(lambda2[t],1,1.2)==FALSE){fail2=fail2+1}
 }
 
-fail1
-fail2
+fail1 # Nombre de fail pour la gestion adaptative
+fail2 # Nombre de fail pour la gestion non-adaptative
 ```

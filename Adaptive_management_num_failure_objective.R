@@ -203,4 +203,6 @@ for (n in 1:15) {
 mean(meanfail1)/nyears
 mean(meanfail2)/nyears
 
-print (c("Le programme a duré :", Sys.time() - T1, "secondes."))
+temps = (Sys.time() - T1)/60
+
+print (c("Le programme a duré :", Sys.time() - T1, "minutes."))

@@ -12,14 +12,25 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+# Introduction
 
-# Estimation d'effectif par Capture-Recapture
+Ce script présente deux parties :
 
+- Le premier est une estimation du la taille de la population de loups en France. Pour cela, nous utilisons le modèle de Jolly-Seber, implémenter ici en Bayésien. Nous avons également pris en compte l'hétérogénéité de détection entre différents individus, expliqué par les individus dominants qui sont bien plus observés que les autres. Ce modèle est appliqué à des données de Capture-Marquage-Recapture fournis par un suivi de l'OFB depuis 28 ans (les données utilisées ici s'arrêtent à 22 années).
+
+- Deuxièmement, nous utilisons les estimations trouvées précédemment afin de prédire la taille de la population dans les années à venir. Ces prédictions sont réalisés dans une optique de gestion adaptative. Nous analysons l'effet de différents taux de prélèvement sur la dynamique des effectifs de loups dans les 2 années suivantes. Pour ce faire nous considérons deux méchanismes de dynamique de population bien connus : le modèle exponentiel et logistique. Ces méchanismes sont implementés en Bayésien et utilisent la méthode de Monte Carlo par chaines de Markov (MCMC).
+
+
+Dans ce script nous utiliserons les deux packages suivants : R2jags et tidyverse
 ```{r}
 library(R2jags)
 library(tidyverse)
 ```
 
+
+# Estimation d'effectif par Capture-Recapture
+
+Modèle de Jolly-Seber implémenté en Bayésien.
 
 ```{r}
 modelCMR = function() {
@@ -28,7 +39,9 @@ modelCMR = function() {
   # Parameters:
   # phi: survival probability
   # gamma: removal entry probability
-  # p: capture probability
+  # p1: capture probability for the more observed group
+  # p2: capture probability for the less observed group
+  # pi: rate of individuals in group 1
   #--------------------------------------
   # States (S):
   # 1 not yet entered
@@ -43,15 +56,13 @@ modelCMR = function() {
   for (t in 1:(n.occasions-1)){
     phi[t] <- mean.phi
     gamma[t] ~ dunif(0, 1) # Prior for entry probabilities
-    p1[t] = mean.p1
-    # p2[t] = mean.p2
-    p2[t] ~ dunif(0,p1[t])
+    p1[t] ~ dunif(0, 1)    # Prior for capture probability of group 1 
+    p2[t] ~ dunif(0,p1[t])    # Prior for capture probability of group 2
   }
   
-  mean.p1 ~ dunif(0, 1) # Prior for mean capture
-  #mean.p2 ~ dunif(0,mean.p1)
+
   mean.phi ~ dunif(0, 1)    # Prior for mean survival
-  pi ~ dunif(0,1)
+  pi ~ dunif(0,1)     # Prior for rate of individuals in group 1
   
   # Define state-transition and observation matrices 	
   for (i in 1:M){  
@@ -86,7 +97,7 @@ modelCMR = function() {
   
   # Likelihood 
   for (i in 1:M){
-    group[i] ~ dbern(pi)
+    group[i] ~ dbern(pi) # Draw a random group
     # Define latent state at first occasion
     z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
     for (t in 2:n.occasions){
@@ -98,6 +109,9 @@ modelCMR = function() {
   } #i
   
   # Calculate derived population parameters
+  mean.p1 = sum(p1) / n.occasions
+  mean.p2 = sum(p2) / n.occasions
+  
   for (t in 1:(n.occasions-1)){
     qgamma[t] <- 1-gamma[t]
   }
@@ -133,7 +147,9 @@ modelCMR = function() {
 
 ## Simulation de données
 
-Données de simulation
+Pour tester le modèle, on va simuler des données de Capture-Recapture sous le modèle JS sur une période de 7 ans.
+
+On met en place les paramètres de simulations.
 ```{r}
 n.occasions <- 7                        # Number of capture occasions
 N <- 400                                 # Superpopulation size
@@ -162,7 +178,7 @@ for (i in 1:N) {
 #P <- matrix(rep(p, n.occasions*N), ncol = n.occasions, nrow = N, byrow = T)
 ```
 
-Fonction qui simule des données de Capture-Recapture sous le modèle JS.
+On implémente la fonction qui simule les données.
 ```{r}
 simul.js <- function(PHI, P, b, N){
   B <- rmultinom(1, N, b) # Generate no. of entering ind. per occasion
@@ -200,13 +216,13 @@ simul.js <- function(PHI, P, b, N){
 
 ```
 
-Lancer la simulation
+On lance la simulation :
 ```{r}
 sim <- simul.js(PHI, P, b, N)
 CH <- sim$CH
 ```
 
-Préparation des données
+On prépare les données pour notre modèle.
 ```{r}
 # Add dummy occasion
 CH.du <- cbind(rep(0, dim(CH)[1]), CH)
@@ -237,7 +253,7 @@ my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
 my.z.init.ms[my.z.init.ms==0] <- 1
 ```
 
-Préparation des paramètres jags
+Préparation des paramètres jags puis lancement du modèle.
 ```{r}
 # Initialisation des données
 bugs.data = list(n.occasions = dim(CH.ms)[2],
@@ -246,13 +262,14 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
 
 
 # Parameters JAGS
-bugs.monitor = c("mean.p1","p2" ,"mean.phi", "b", "Nsuper", "N", "B","pi")
+bugs.monitor = c("mean.p1","mean.p2" ,"mean.phi", "b", "Nsuper", "N", "B","pi")
 bugs.chains = 2
 
 
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
-       mean.p1 = runif(1, 0, 1),
+       # p1 = runif(1, 0, 1),
+       # p2 = runif(1,0,1),
        z = cbind(rep(NA, dim(my.z.init.ms)[1]), my.z.init.ms[,-1]))
 }
 
@@ -267,14 +284,15 @@ wolf_modelCMR = jags(data = bugs.data,
                      n.burnin=500)
 ```
 
+On affiche les paramètres estimés.
 ```{r}
 print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
-mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
-print(mean.p2)
 ```
 
 
 # Données CMR du loup
+
+On va maintenant appliquer le modèle de Jolly-Seber aux données CMR réelles. 
 
 ```{r}
 setwd("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model")
@@ -285,7 +303,8 @@ CH=data.matrix(CMR)
 n.occasions = dim(CH)[2]
 ```
 
-Add dummy occasion
+On prépare ces données.
+D'abord on ajoute de fausses occasions d'observation.
 ```{r}
 CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 
@@ -301,14 +320,14 @@ for(i in 1:nrow(z.init)) {
 }
 ```
 
-Augment data
+Puis on augmente les données.
 ```{r}
 nz <- 150
 aug = matrix(0, ncol = dim(CH.du)[2], nrow = nz)
 CH.ms = rbind(CH.du, aug)
 ```
 
-Recode CH matrix: a 0 is not allowed in WinBUGS!
+On recode la matrice CH ne changeant les 0 en 2 : les 0 ne sont pas autorosisés avec WinBUGS.
 ```{r}
 CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
 # Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté pour le moment
@@ -317,7 +336,7 @@ z.init.ms = rbind(z.init, aug)
 z.init.ms[z.init.ms == 0] = 1
 ```
 
-Paramètres jags
+Préparation des paramètres JAGS et lancement du modèle.
 ```{r}
 # Initialisation des données
 bugs.data = list(n.occasions = dim(CH.ms)[2],
@@ -325,12 +344,13 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
                  M = dim(CH.ms)[1])
 
 # Parameters JAGS
-bugs.monitor = c("mean.p1","p2", "mean.phi", "b", "Nsuper", "N", "B")
+bugs.monitor = c("mean.p1","mean.p2", "mean.phi", "b", "Nsuper", "N", "B")
 bugs.chains = 2
 
 bugs.inits = function() {
   list(mean.phi = runif(1, 0, 1),
-    mean.p1 = runif(1, 0, 1),
+    # p1 = runif(1, 0, 1),
+    # p2 = runif(1, 0, 1),
     z = cbind(rep(NA, dim(z.init.ms)[1]), z.init.ms[, -1])
   )
 }
@@ -349,20 +369,23 @@ CMR = wolf_modelCMR$BUGSoutput$sims.list$N
 save(CMR,file="CMRdataBayesian.RData")
 ```
 
+On affiche les paramètres estimés.
 ```{r}
 print(wolf_modelCMR, intervals = c(2.5/100, 50/100, 97.5/100))
-mean.p2 = mean(wolf_modelCMR$BUGSoutput$sims.list$p2)
-print(mean.p2)
 ```
 
 
+# Modèles de prédiction à cours terme : gestion adaptative
 
-Estimations d'effectifs par CMR :
-```{r}
+
+```{r, echo=FALSE}
+library(R2jags)
+library(tidyverse)
+
 load("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model/CMRdataBayesian.RData")
 ```
 
-Arranger les données
+On arrange les données CMR.
 ```{r}
 CMRi=list()
 for (i in 1:8){
@@ -389,9 +412,6 @@ Nombre de prélèvements :
 harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42)
 ```
 
-
-
-# Modèles d'estimation et de prédiction à cours terme
 
 ## Modèle exponentiel
 
@@ -529,7 +549,7 @@ if(i==4){
 On affiche les courbes d'effectifs :
 
 ```{r,warning=FALSE}
-output = output1 %>% left_join(output2) %>%
+outputexp = output1 %>% left_join(output2) %>%
   left_join(output3) %>%
   left_join(output4) %>%
   pivot_longer(
@@ -547,7 +567,7 @@ variable_labeller <- function(variable, value) {
   return(variable_names[value])
 }
 
-  ggplot(output)+
+  ggplot(outputexp)+
   geom_point(aes(x = years, y = ObsY)) + 
   coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
   aes(x = years, y = valuesM)+
@@ -706,7 +726,7 @@ if(i==4){
 On affiche les estimations et projections pour chaque taux de prélevement :
 
 ```{r,warning=FALSE}
-output = output1 %>% left_join(output2) %>%
+outputlogi = output1 %>% left_join(output2) %>%
   left_join(output3) %>%
   left_join(output4) %>%
   pivot_longer(
@@ -724,7 +744,7 @@ variable_labeller <- function(variable, value) {
   return(variable_names[value])
 }
 
-  ggplot(output)+
+  ggplot(outputlogi)+
   geom_point(aes(x = years, y = ObsY)) + 
   coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
   aes(x = years, y = valuesM)+
