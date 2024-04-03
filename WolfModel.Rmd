@@ -37,6 +37,7 @@ Estimations d'effectifs par CMR :
 ```{r}
 CMR <- c(17.1,35.4,47.7,25.1,62.6,47.9,81.7,110.5,102.7,135.9,132.6,101.7,130.3,
 141.4,141.5,175.5,210.3,174.5,353.6,280.2,376.7,561.2,571.9,682.4,645.7,783.8,868)
+nyears = length(CMR)
 ```
 
 Nombre de prélèvements :
@@ -725,8 +726,8 @@ On initialise les paramètres pour la simulation des données
 ```{r}
 nyears = 27
 N1 = 30
-sigma = 0.15
-lambda=1.15
+sigma = 0.2
+lambda=1.2
 ```
 
 On crée un data frame qui contiendra nos données.
@@ -743,7 +744,7 @@ On ajoute de la stochasticité avec $N_{t+1}\sim \text{Normale}(\lambda N_t,\sig
 
 ```{r}
 for (t in 1:(nyears-1)){
-   ssm_sim1$N[t+1] <- round(rnorm(1,ssm_sim1$N[t] * lambda,sigma))
+   ssm_sim1$N[t+1] <- round(rnorm(1,ssm_sim1$N[t] * lambda,sigma)) - harvest[t]
 }
 
 for (t in 1:nyears){
@@ -783,8 +784,8 @@ modelexp = function() {
 
 Initialisation des données :
 ```{r}
-bugs.data = list(nyears = nrow(ssm_sim1)+20,
-                 y = c(ssm_sim1$y,rep(NA,20)))
+bugs.data = list(nyears = nrow(ssm_sim1)+10,
+                 y = c(ssm_sim1$y,rep(NA,10)))
 ```
 
 Paramètres JAGS :
@@ -826,7 +827,7 @@ sim_modelexp$BUGSoutput$sims.matrix %>%
   geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
   geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
   geom_point(data = bugs.data %>% as_tibble, aes(x = 1995 + 1:unique(nyears), y = y)) + 
-  coord_cartesian(xlim=c(1996,2040),ylim=c(0,1500))+
+  coord_cartesian(xlim=c(1996,2030),ylim=c(0,5500))+
   theme_bw()+
   labs(title = "Estimated and projected population size",
        subtitle = "Observed population size (black dots)",
@@ -843,7 +844,7 @@ nyears = 27
 N1 = 30
 sigma = 0.15
 K = 800
-alpha = 0.2
+alpha = 0.3
 ```
 
 On crée un data frame qui contiendra nos données
@@ -1289,7 +1290,7 @@ pas = 1
 H = 0
 sigma = 0.15
 K = 800
-alpha = 0.5
+alpha = 0.3
 ite = 0
 tempH = c()
 NAMharvest = 0.15

@@ -196,7 +196,9 @@ simul.js <- function(PHI, P, b, N){
     for (t in (ent.occ[i]+1):n.occasions){
       # Bernoulli trial: has individual survived occasion?
       sur <- rbinom(1, 1, PHI[i,t-1])
-      ifelse (sur==1, CH.sur[i,t] <- 1, break)
+      #ifelse (sur==1, CH.sur[i,t] <- 1, break)
+      if (sur==1){CH.sur[i,t]=1}
+      else{CH.sur[i,t]=2 ; break}
     } #t
   } #i
   # Simulating capture
@@ -210,6 +212,7 @@ simul.js <- function(PHI, P, b, N){
   cap.sum <- rowSums(CH)
   never <- which(cap.sum == 0)
   CH <- CH[-never,]
+  
   Nt <- colSums(CH.sur)    # Actual population size
   return(list(CH=CH, B=B, N=Nt))
 }
@@ -220,6 +223,7 @@ On lance la simulation :
 ```{r}
 sim <- simul.js(PHI, P, b, N)
 CH <- sim$CH
+CH
 ```
 
 On prépare les données pour notre modèle.
@@ -229,8 +233,8 @@ CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 
 my.z.init <- CH.du
 
-first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
+first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1 | x==2)))
+last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
 
 for(i in 1:nrow(my.z.init)) {
   my.z.init[i, first.one[i]  : last.one[i]] = 2                           
@@ -247,6 +251,7 @@ nz <- 150
 CH.ms <- rbind(CH.du, matrix(0, ncol = dim(CH.du)[2], nrow = nz))
 
 # Recode CH matrix: a 0 is not allowed in WinBUGS!
+#CH.ms[CH.ms==2] <- 3                     
 CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
 
 my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
@@ -329,6 +334,7 @@ CH.ms = rbind(CH.du, aug)
 
 On recode la matrice CH ne changeant les 0 en 2 : les 0 ne sont pas autorosisés avec WinBUGS.
 ```{r}
+#CH.ms[CH.ms == 2] = 3  
 CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
 # Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté pour le moment
 
