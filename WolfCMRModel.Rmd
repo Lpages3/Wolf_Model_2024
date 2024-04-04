@@ -124,16 +124,21 @@ modelCMR = function() {
     b[t] <- cprob[t] / psi      # Entry probability
   } #t
   
-  for (i in 1:M){
-    for (t in 2:n.occasions){
-      al[i,t-1] <- equals(z[i,t], 2)
+  for (i in 1:M) {
+    for (t in 2:deadstop[i]) {
+      al[i, t-1] <- equals(z[i, t], 2)
     } #t
-    for (t in 1:(n.occasions-1)){
-      d[i,t] <- equals(z[i,t]-al[i,t],0)
-    } #t   
+    for (t in (deadstop[i]+1):n.occasions) {
+      al[i, t-1] = 0
+    }
+    for (t in 1:(deadstop[i] - 1)) {
+      d[i, t] <- equals(z[i, t] - al[i, t], 0)
+    } #t
+    for (t in (deadstop[i]):n.occasions) {
+      d[i, t] = 0
+    }
     alive[i] <- sum(al[i,])
   } #i
-  
   for (t in 1:(n.occasions-1)){
     N[t] <- sum(al[,t])        # Actual population size
     B[t] <- sum(d[,t])         # Number of entries
@@ -212,7 +217,9 @@ simul.js <- function(PHI, P, b, N){
   cap.sum <- rowSums(CH)
   never <- which(cap.sum == 0)
   CH <- CH[-never,]
-  
+  first <- apply(CH[,1:ncol(CH)], 1, function(x) min(which(x == 1)))
+  firstdead = which(first == Inf)
+  CH = CH[-firstdead,]
   Nt <- colSums(CH.sur)    # Actual population size
   return(list(CH=CH, B=B, N=Nt))
 }
@@ -233,10 +240,11 @@ CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 
 my.z.init <- CH.du
 
-first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1 | x==2)))
+first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
 last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
 
 for(i in 1:nrow(my.z.init)) {
+  if (my.z.init[i,last.one[i]]==2){last.one[i]=last.one[i]-1}
   my.z.init[i, first.one[i]  : last.one[i]] = 2                           
   # 2 indique que l'on est sûr que l'individu est vivant
   if(first.one[i] > 1) my.z.init[i,1  : (first.one[i] - 1) ] = 1          
@@ -256,6 +264,8 @@ CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
 
 my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
 my.z.init.ms[my.z.init.ms==0] <- 1
+
+deadstop = apply(my.z.init.ms[,1:ncol(CH.ms)], 1, function(x) max(which(x == 1 | x==2)))
 ```
 
 Préparation des paramètres jags puis lancement du modèle.
@@ -263,7 +273,8 @@ Préparation des paramètres jags puis lancement du modèle.
 # Initialisation des données
 bugs.data = list(n.occasions = dim(CH.ms)[2],
                  y = CH.ms,
-                 M = dim(CH.ms)[1])
+                 M = dim(CH.ms)[1],
+                 deadstop = deadstop)
 
 
 # Parameters JAGS
@@ -316,12 +327,16 @@ CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 z.init <- CH.du
 
 first.one <- apply(z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1)))
+last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
 
 for(i in 1:nrow(z.init)) {
-  z.init[i, first.one[i]  : last.one[i]] = 2                           # 2 indique que l'on est sûr que l'individu est vivant
-  if(first.one[i] > 1) z.init[i,1  : (first.one[i] - 1) ] = 1          # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
-  if(last.one[i] < ncol(z.init)) z.init[i, (last.one[i] + 1) : ncol(z.init)    ] = 3 # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
+  if (z.init[i,last.one[i]]==2){last.one[i]=last.one[i]-1}
+  z.init[i, first.one[i]  : last.one[i]] = 2                           
+  # 2 indique que l'on est sûr que l'individu est vivant
+  if(first.one[i] > 1) z.init[i,1  : (first.one[i] - 1) ] = 1          
+  # 1 indique que l'on n'a toujours pas observé l'individu (pas observé ou pas encore né)
+  if(last.one[i] < ncol(z.init)) z.init[i, (last.one[i] + 1) : ncol(z.init)    ] = 3 
+  # 3 indique que l'on n'observe plus l'individu (pas observé ou mort)
 }
 ```
 
@@ -340,6 +355,8 @@ CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
 
 z.init.ms = rbind(z.init, aug)
 z.init.ms[z.init.ms == 0] = 1
+
+deadstop = apply(z.init.ms[,1:ncol(z.init.ms)], 1, function(x) max(which(x == 1 | x==2)))
 ```
 
 Préparation des paramètres JAGS et lancement du modèle.
@@ -347,7 +364,8 @@ Préparation des paramètres JAGS et lancement du modèle.
 # Initialisation des données
 bugs.data = list(n.occasions = dim(CH.ms)[2],
                  y = CH.ms,
-                 M = dim(CH.ms)[1])
+                 M = dim(CH.ms)[1],
+                 deadstop = deadstop)
 
 # Parameters JAGS
 bugs.monitor = c("mean.p1","mean.p2", "mean.phi", "b", "Nsuper", "N", "B")
