@@ -65,36 +65,34 @@ modelCMR = function() {
   pi ~ dunif(0,1)     # Prior for rate of individuals in group 1
   
   # Define state-transition and observation matrices 	
-  for (i in 1:M){  
     # Define probabilities of state S(t+1) given S(t)
     for (t in 1:(n.occasions-1)){
-      ps[1,i,t,1] <- 1-gamma[t]
-      ps[1,i,t,2] <- gamma[t]
-      ps[1,i,t,3] <- 0
-      ps[2,i,t,1] <- 0
-      ps[2,i,t,2] <- phi[t]
-      ps[2,i,t,3] <- 1-phi[t]
-      ps[3,i,t,1] <- 0
-      ps[3,i,t,2] <- 0
-      ps[3,i,t,3] <- 1
+      ps[1,t,1] <- 1-gamma[t]
+      ps[1,t,2] <- gamma[t]
+      ps[1,t,3] <- 0
+      ps[2,t,1] <- 0
+      ps[2,t,2] <- phi[t]
+      ps[2,t,3] <- 1-phi[t]
+      ps[3,t,1] <- 0
+      ps[3,t,2] <- 0
+      ps[3,t,3] <- 1
       
       # Define probabilities of O(t) given S(t)
-      po[1,i,t,1,1] <- 0
-      po[1,i,t,2,1] <- 1
-      po[2,i,t,1,1] <- p1[t]
-      po[2,i,t,2,1] <- 1-p1[t]
-      po[3,i,t,1,1] <- 0
-      po[3,i,t,2,1] <- 1
+      po[1,t,1,1] <- 0
+      po[1,t,2,1] <- 1
+      po[2,t,1,1] <- p1[t]
+      po[2,t,2,1] <- 1-p1[t]
+      po[3,t,1,1] <- 0
+      po[3,t,2,1] <- 1
     
-      po[1,i,t,1,2] <- 0
-      po[1,i,t,2,2] <- 1
-      po[2,i,t,1,2] <- p2[t]
-      po[2,i,t,2,2] <- 1-p2[t]
-      po[3,i,t,1,2] <- 0
-      po[3,i,t,2,2] <- 1
+      po[1,t,1,2] <- 0
+      po[1,t,2,2] <- 1
+      po[2,t,1,2] <- p2[t]
+      po[2,t,2,2] <- 1-p2[t]
+      po[3,t,1,2] <- 0
+      po[3,t,2,2] <- 1
     } #t 
-  } #i
-  
+
   # Likelihood 
   for (i in 1:M){
     group[i] ~ dbern(pi) # Draw a random group
@@ -102,13 +100,13 @@ modelCMR = function() {
     z[i,1] <- 1   # Make sure that all M individuals are in state 1 at t=1
     for (t in 2:n.occasions){
       # State process: draw S(t) given S(t-1)
-      z[i, t] ~ dcat(ps[z[i, t - 1], i, t - 1, ])
+      z[i, t] ~ dcat(ps[z[i, t - 1], t - 1, ])
       # Observation process: draw O(t) given S(t)
-      y[i, t] ~ dcat(po[z[i, t], i, t - 1, , group[i] + 1])
+      y[i, t] ~ dcat(po[z[i, t], t - 1, , group[i] + 1])
     } #t
   } #i
   
-  # Calculate derived population parameters
+    # Calculate derived population parameters
   mean.p1 = sum(p1) / n.occasions
   mean.p2 = sum(p2) / n.occasions
   
@@ -147,8 +145,9 @@ modelCMR = function() {
     w[i] <- 1-equals(alive[i],0)
   } #i
   Nsuper <- sum(w[])            # Superpopulation size
-  }
+}
 ```
+
 
 ## Simulation de données
 
@@ -241,10 +240,10 @@ CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 my.z.init <- CH.du
 
 first.one <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
+last.one  <- apply(my.z.init[,1:ncol(CH.du)], 1, function(x) max(which(x !=0)))
 
 for(i in 1:nrow(my.z.init)) {
-  if (my.z.init[i,last.one[i]]==2){last.one[i]=last.one[i]-1}
+  # if (my.z.init[i,last.one[i]]==2){last.one[i]=last.one[i]-1}
   my.z.init[i, first.one[i]  : last.one[i]] = 2                           
   # 2 indique que l'on est sûr que l'individu est vivant
   if(first.one[i] > 1) my.z.init[i,1  : (first.one[i] - 1) ] = 1          
@@ -259,7 +258,7 @@ nz <- 150
 CH.ms <- rbind(CH.du, matrix(0, ncol = dim(CH.du)[2], nrow = nz))
 
 # Recode CH matrix: a 0 is not allowed in WinBUGS!
-#CH.ms[CH.ms==2] <- 3                     
+CH.ms[CH.ms==2] = 1
 CH.ms[CH.ms==0] <- 2                     # Not seen = 2, seen = 1
 
 my.z.init.ms <- rbind(my.z.init, matrix(0, ncol = dim(my.z.init)[2], nrow = nz))
@@ -312,12 +311,18 @@ On va maintenant appliquer le modèle de Jolly-Seber aux données CMR réelles.
 
 ```{r}
 setwd("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model")
-CMR=readRDS("CMR/dat/cmrlouphiver.rds")
+# CMR=readRDS("CMR/dat/cmrlouphiver.rds")
+CMR=read.csv2("donneesCMR.csv")
+
+#Test pour moins de temps
+#CMR= CMR %>% as_tibble() %>% filter(!row_number() %in% seq(1,2392,2)) %>% filter(!row_number() %in% seq(1,2392,2)) %>% filter(!row_number() %in% seq(1,2392,2)) 
+#
 
 CH=data.matrix(CMR)
 
 n.occasions = dim(CH)[2]
 ```
+
 
 On prépare ces données.
 D'abord on ajoute de fausses occasions d'observation.
@@ -326,11 +331,11 @@ CH.du <- cbind(rep(0, dim(CH)[1]), CH)
 
 z.init <- CH.du
 
-first.one <- apply(z.init[,1:ncol(CH.du)], 1, function(x) min(which(x == 1)))
-last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
+first.one <- apply(z.init[,1:ncol(CH.du)], 1, function(x) min(which(x != 0)))
+last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x != 0)))
+# last.one  <- apply(z.init[,1:ncol(CH.du)], 1, function(x) max(which(x == 1 | x==2)))
 
 for(i in 1:nrow(z.init)) {
-  if (z.init[i,last.one[i]]==2){last.one[i]=last.one[i]-1}
   z.init[i, first.one[i]  : last.one[i]] = 2                           
   # 2 indique que l'on est sûr que l'individu est vivant
   if(first.one[i] > 1) z.init[i,1  : (first.one[i] - 1) ] = 1          
@@ -349,14 +354,14 @@ CH.ms = rbind(CH.du, aug)
 
 On recode la matrice CH ne changeant les 0 en 2 : les 0 ne sont pas autorosisés avec WinBUGS.
 ```{r}
-#CH.ms[CH.ms == 2] = 3  
+CH.ms[CH.ms == 2] = 1
 CH.ms[CH.ms == 0] = 2             # Not seen = 2, seen = 1
-# Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté pour le moment
+## Il y avait déjà des 2 dans les données, indiquant qu'un individu est mort. Cette information supplémentaire est mise de côté avec ce modèle
 
 z.init.ms = rbind(z.init, aug)
 z.init.ms[z.init.ms == 0] = 1
 
-deadstop = apply(z.init.ms[,1:ncol(z.init.ms)], 1, function(x) max(which(x == 1 | x==2)))
+deadstop = apply(z.init.ms[,1:ncol(z.init.ms)], 1, function(x) max(which(x=1 | x==2)))
 ```
 
 Préparation des paramètres JAGS et lancement du modèle.
@@ -368,7 +373,7 @@ bugs.data = list(n.occasions = dim(CH.ms)[2],
                  deadstop = deadstop)
 
 # Parameters JAGS
-bugs.monitor = c("mean.p1","mean.p2", "mean.phi", "b", "Nsuper", "N", "B")
+bugs.monitor = c("mean.p1","mean.p2", "mean.phi", "b", "Nsuper", "N", "B","pi")
 bugs.chains = 2
 
 bugs.inits = function() {
@@ -379,7 +384,7 @@ bugs.inits = function() {
   )
 }
 
-# Lancement du modèle (un peu long : ~1h30)
+# Lancement du modèle (long)
 wolf_modelCMR = jags(data = bugs.data,
                      inits = bugs.inits, 
                      parameters.to.save = bugs.monitor,
@@ -411,11 +416,12 @@ load("/media/loic/Commun/Travail/Stage CEFE 2024/Wolf_Model/CMRdataBayesian.RDat
 
 On arrange les données CMR.
 ```{r}
+nyears = dim(CMR)[2]
 CMRi=list()
 for (i in 1:8){
-  CMRi[[i]]=matrix(0,375,22)
+  CMRi[[i]]=matrix(0,375,nyears)
   for (t in 1:375){
-    for (x in 1:22){
+    for (x in 1:nyears){
      CMRi[[i]][t,x]=CMR[(i-1)*375+t,x]
     }
   }
@@ -428,12 +434,11 @@ for (i in 1:8){
   arrange(years)
 }
 
-nyears=length(CMRi[[1]]$N)
 ```
 
 Nombre de prélèvements :
 ```{r}
-harvest <- c(0,0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42)
+harvest <- c(0,0,0,0,1,0,0,2,1,2,0,0,1,0,4,4,6,18,36,34,42,51,98,105,103,169,207)
 ```
 
 
@@ -516,6 +521,7 @@ wolf_modelexp = jags(data = bugs.data,
                    n.burnin=50000)
 
 if (i==1){
+print(wolf_modelexp$BUGSoutput)
 output1 = wolf_modelexp$BUGSoutput$sims.matrix %>%
   as_tibble() %>%
   pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter1") %>%
@@ -593,7 +599,7 @@ variable_labeller <- function(variable, value) {
 
   ggplot(outputexp)+
   geom_point(aes(x = years, y = ObsY)) + 
-  coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
+  coord_cartesian(xlim=c(1996,2024),ylim=c(0,1000))+
   aes(x = years, y = valuesM)+
   geom_line(colour = "red", lty = "dashed")+
   geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+
@@ -693,6 +699,7 @@ wolf_modellogist = jags(data = bugs.data,
                    n.burnin=50000)
 
 if (i==1){
+  print(wolf_modellogist$BUGSoutput,intervals = c(2.5/100, 50/100, 97.5/100))
 output1 = wolf_modellogist$BUGSoutput$sims.matrix %>%
   as_tibble() %>%
   pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter1") %>%
@@ -770,7 +777,7 @@ variable_labeller <- function(variable, value) {
 
   ggplot(outputlogi)+
   geom_point(aes(x = years, y = ObsY)) + 
-  coord_cartesian(xlim=c(1996,2018),ylim=c(0,700))+
+  coord_cartesian(xlim=c(1996,2024),ylim=c(0,1000))+
   aes(x = years, y = valuesM)+
   geom_line(colour = "red", lty = "dashed")+
   geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+

@@ -705,7 +705,7 @@ ggplot() +
   geom_point(aes(x = seq(10, 27), y = DIClogist), colour = "red") +
   labs(
     title = "Evolution du DIC de l'année 10 à l'ensemble des 27 années",
-    subtitle = "en bleue: modèle exponentiel ; en rouge: modèle logistique",
+    subtitle = "en bleu: modèle exponentiel ; en rouge: modèle logistique",
     x = "Years",
     y = "DIC") +
   theme_bw()
@@ -840,9 +840,9 @@ sim_modelexp$BUGSoutput$sims.matrix %>%
 
 On initialise les paramètres pour la simulation des données
 ```{r}
-nyears = 27
+nyears = 28
 N1 = 30
-sigma = 0.15
+sigma = 0.2
 K = 800
 alpha = 0.3
 ```
@@ -962,7 +962,7 @@ N1 = 30
 sigma = 0.15
 lambda = 1.15
 K = 800
-alpha = 0.2
+alpha = 0.3
 ```
 
 On crée un data frame qui contiendra nos données
@@ -1369,9 +1369,9 @@ for (nyears in seq(2,nyears,pas)) { # Boucle sur le nombre de tranches d'années
     
     # Conditions de modification du taux de prélevement
     if (lambda < 1.2) {H = 0}
-    if (lambda >= 1.2 & lambda < 1.3) {H = 0.1}
-    if (lambda >= 1.3 & lambda < 1.4) {H = 0.2}
-    if (lambda > 1.4) {H = 0.3}
+    if (lambda >= 1.2 & lambda < 1.3) {H = 0.2}
+    if (lambda >= 1.3 & lambda < 1.4) {H = 0.3}
+    if (lambda > 1.4) {H = 0.4}
   
   print(H)
 }
@@ -1416,6 +1416,175 @@ wolf_modellogist$BUGSoutput$sims.matrix%>%
 tempH
 ```
 
+## Avec le modèle mixé
+
+On crée un data frame qui contiendra nos données
+```{r}
+N1 = 30
+nyears = 27
+
+ssm_sim6 = data.frame(Year = 1:nyears,
+                      y = numeric(nyears),
+                      N = numeric(nyears),
+                      Nbis = numeric(nyears),
+                      ybis = numeric(nyears))
+
+ssm_sim6$N[1] = N1
+ssm_sim6$Nbis[1] = N1
+```
+
+
+```{r,results='hide'}
+# Paramètres initiaux
+pas = 1
+H = 0
+sigma = 0.15
+lamb = 1.2
+K = 800
+alpha = 0.3
+ite = 0
+tempH = c()
+NAMharvest = 0.15
+
+# Lancement du modèle
+for (nyears in seq(2, nyears, pas)) {
+  # Boucle sur le nombre de tranches d'années parcourues
+  ite = ite + 1
+  
+  if (nyears < 16) {
+    # Simulation des effectifs
+    if (nyears <= 5) {
+      H = 0
+      # Initialisation des effectifs, sans prélevement sur les 5 premières années
+      for (t in 1:(nyears - 1)) {
+        u = ssm_sim6$N[t] * lamb
+        
+        ssm_sim6$N[t + 1] = rpois(1, u)
+        ssm_sim6$Nbis[t + 1] = rpois(1, u)
+      }
+    }
+    
+    
+    if (nyears > 5) {
+      # Suite de la simulation des effectifs entre les années 6 et 25
+      for (t in (nyears - 5):(nyears - 1)) {
+        u = ssm_sim6$N[t] * (lamb - H)
+        v = ssm_sim6$Nbis[t] * (lamb - NAMharvest)
+        
+        ssm_sim6$N[t + 1] = rpois(1, u)
+        ssm_sim6$Nbis[t + 1] = rpois(1, v)
+      }
+    }
+  }
+  
+  if (nyears >= 16) {
+    for (t in (nyears - pas):(nyears - 1)) {
+      u = ssm_sim6$N[t] * (1 - H)             # Taux de prélevement adaptatif
+      v = ssm_sim6$Nbis[t] * (1 - NAMharvest) # Taux de prélevement constant
+      
+      Er = exp(alpha * (1 - c(u, v) / K)) * c(u, v)
+      
+      ssm_sim6$N[t + 1] = rpois(1, Er[1])
+      ssm_sim6$Nbis[t + 1] = rpois(1, Er[2])
+    }
+    
+  }
+  print(H)
+  tempH[ite] = H # Enregistre les taux de prélevement pour chaque année
+  
+  # Simulation des effecitfs observés
+  for (t in 1:nyears) {
+    ssm_sim6$y[t] = rpois(1, ssm_sim6$N[t])
+    ssm_sim6$ybis[t] = rpois(1, ssm_sim6$Nbis[t])
+  }
+  
+  # Début de l'estimation par approche bayésienne
+    # Initialisation des données
+    bugs.data = list(nyears = nyears,
+                     y = c(ssm_sim6$y[1:nyears],rep(NA,5)),
+                     dH = H)
+    
+    # Paramètres JAGS
+    bugs.monitor = c("alpha", "sigmaProc", "tauProc", "K", "N")
+    bugs.chains = 3
+    init1 = list(alpha = .5, sigmaProc = .25)
+    init2 = list(alpha = .1, sigmaProc = .05)
+    init3 = list(alpha = 1, sigmaProc = .45)
+    bugs.inits = list(init1, init2, init3)
+    
+    # Lancement du modèle
+    
+    wolf_modellogist = jags(
+      data = bugs.data,
+      inits = bugs.inits,
+      parameters.to.save = bugs.monitor,
+      model.file = modellogist,
+      n.chains = bugs.chains,
+      n.thin = 10,
+      n.iter = 20000,
+      n.burnin = 5000
+    )
+    output1 = wolf_modellogist$BUGSoutput$sims.matrix
+    
+    # Calcul du taux de reproduction estimé
+    Nest = wolf_modellogist$BUGSoutput$median$N
+    l = length(Nest)
+    lambi = c()
+    for (t in 1:(l-5)) {
+      lambi[t] = Nest[t+1] / Nest[t]}
+    lambda = mean(lambi)
+    # lambda = Nest[nyears+1] / Nest[nyears]
+    print(lambda)
+    
+    # Conditions de modification du taux de prélevement
+    if (lambda < 1.2) {H = 0}
+    if (lambda >= 1.2 & lambda < 1.3) {H = 0.1}
+    if (lambda >= 1.3 & lambda < 1.4) {H = 0.2}
+    if (lambda > 1.4) {H = 0.3}
+  
+}
+
+```
+
+```{r}
+ggplot(ssm_sim6, aes(x = Year)) +
+  geom_point(aes(y = y), colour = "red") +
+  geom_line(aes(y = N), colour = "red4", lty = "dashed") +
+  geom_point(aes(y = ybis), colour = "blue") +
+  geom_line(aes(y = Nbis), colour = "blue4", lty = "dashed") +
+  theme_bw()
+```
+
+```{r}
+tempH
+```
+
+
+
+On affiche la dynamique de la population sur un graphique.
+```{r,warning=FALSE}
+wolf_modellogist$BUGSoutput$sims.matrix%>%
+  as_tibble() %>%
+  pivot_longer(cols = everything(),  values_to = "value", names_to = "parameter") %>%
+  filter(str_detect(parameter, "N")) %>%
+  group_by(parameter) %>%
+  summarize(medianN = median(value),
+            lq = quantile(value, probs = 2.5/100),
+            hq = quantile(value, probs = 97.5/100))%>%
+  mutate(years = parse_number(parameter))%>%
+  arrange(years)%>%
+  ggplot()+
+  geom_line(aes(x = years, y = medianN), colour = "red", lty = "dashed")+
+  geom_ribbon(aes(x = years, ymin = lq, ymax = hq), fill = "red", alpha = 0.3)+
+  geom_point(data = bugs.data %>% as_tibble, aes(x = 1:unique(nyears+5), y = c(ssm_sim6$y,rep(NA,5)))) + 
+  theme_bw()+
+  labs(title = "Estimated population size",
+       subtitle = "Observed population size (black dots)",
+       x = "Years",
+       y = "Number of wolves")
+```
+
+
 ## Comparaison avec une gestion non-adaptative
 
 On prend le même jeu de données simulé pécédemment et on applique un taux de prélevement constant chaque année (15% pour coller avec le taux de prélevement observé sur les loups en France).
@@ -1424,7 +1593,7 @@ On prend le même jeu de données simulé pécédemment et on applique un taux d
 ```{r,results='hide'}
 # Initialisation des données
 bugs.data = list(nyears = nyears,
-                 y = c(ssm_sim4$ybis[1:nyears], rep(NA, 5)),
+                 y = c(ssm_sim6$ybis[1:nyears], rep(NA, 5)),
                  dH = NAMharvest)
 
 wolf_modellogist = jags(
@@ -1474,8 +1643,8 @@ output1 = output1 %>%
 output = output1 %>% left_join(output2)
 
   ggplot(output) +
-  geom_point(data = ssm_sim4, aes(x = seq(1, 25), y = y), colour = "red") +
-  geom_point(data = ssm_sim4, aes(x = seq(1, 25), y = ybis), colour = "blue")+
+  geom_point(data = ssm_sim6, aes(x = seq(1,27), y = y), colour = "red") +
+  geom_point(data = ssm_sim6, aes(x = seq(1, 27), y = ybis), colour = "blue")+
   geom_line(aes(x = years, y = medianN1), colour = "red4", lty = "dashed")+
   geom_line(aes(x = years, y = medianN2), colour = "blue4", lty = "dashed")+
   geom_ribbon(aes(x = years, ymin = lq1, ymax = hq1), fill = "red", alpha = 0.3)+
